@@ -1,16 +1,19 @@
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <iostream>
+#include <map>
+#include <string>
+#include <vector>
+
 #include "content-streamer.h"
 #include "led-matrix.h"
 #include "pixel-mapper.h"
 #include <Magick++.h>
-#include <algorithm>
 #include <arpa/inet.h>
-#include <array>
-#include <cstdint>
 #include <errno.h>
 #include <fcntl.h>
-#include <iostream>
 #include <magick/image.h>
-#include <map>
 #include <math.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -18,13 +21,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <string>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <vector>
 // #include <boost/chrono.hpp>
 // #include <boost/thread/thread.hpp>
 #include <wiringPi.h>
@@ -66,16 +67,10 @@ RGBMatrix *matrix;
 #define UniconLight0 8
 #define UniconLight1 9
 #define UniconLight2 27
-int ButtonState[2];
-#define Button 25
 #define CM_ON 1
 #define CM_OFF 0
-int64_t ButtonTime;
-int64_t ButtonTimeHold;
 bool breakAnimationLoop = false;
 int currentScenarioNum = 0;
-// void set_channel(int gpioPin, int mode) { digitalWrite(gpioPin, mode); };
-void set_channel(int channel, int mode) { digitalWrite(Button + channel, mode); };
 
   // constexpr size_t length(T(&)[N]) { return N; }
   // using namespace std;
@@ -91,8 +86,6 @@ std::array<uint8_t, MAXDATASIZE> buf;
 std::array<uint8_t, MAXDATASIZE> buffer;
 
 class UserTCPprotocol {
-  // UserTCPprotocol();
-  // ~UserTCPprotocol();
 public:
   enum class Type : uint8_t { COMMUNICATION, STATE, SETTINGS, DATA };
   enum class Communication : uint8_t { WHO, ACK, RCV };
@@ -105,7 +98,6 @@ public:
   enum class ClientName : uint8_t { TL12, TL34, TL56, TL78 };
 };
 
-// int clientName = static_cast<int>(UserTCPprotocol::ClientName::TL12);
 int clientName = static_cast<int>(UserTCPprotocol::ClientName::TL12);
 
 // get sockaddr, IPv4 or IPv6:
@@ -129,8 +121,9 @@ void quit(int val) {
     }
   }
 }
+
 template <class T, size_t N> void sentSocData(int sockfd, std::array<T, N> buf) {
-  int bytes_sent;
+  ssize_t bytes_sent;
   if ((bytes_sent = send(sockfd, buf.data(), buf.size(), 0)) == -1) {
     perror("send");
   } else {
@@ -142,40 +135,6 @@ template <class T, size_t N> void sentSocData(int sockfd, std::array<T, N> buf) 
   }
 }
 
-void read_keys(int gpioPin) {
-  return;
-  ButtonState[0] = digitalRead(gpioPin);
-  if (ButtonState[0] != ButtonState[1]) {
-    ButtonState[1] = ButtonState[0];
-
-    const tmillis_t start_ButtonTime = GetTimeInMillis();
-    if (start_ButtonTime - ButtonTime > 1000) {
-      ButtonTime = start_ButtonTime;
-      if (!ButtonState[0]) {
-        // std::array<uint8_t, 5> ar = {0, 3,
-        // static_cast<int>(UserTCPprotocol::Type::DATA),
-        // static_cast<int>(UserTCPprotocol::Data::BUTTON),
-        // static_cast<int>(UserTCPprotocol::Data::BUTTON)};
-        std::array<uint8_t, 5> ar = {0, 3, static_cast<int>(UserTCPprotocol::Type::DATA),
-                                     static_cast<int>(UserTCPprotocol::Data::BUTTON), 1};
-        sentSocData(sockfd, ar);
-      }
-    }
-  } else {
-    if (!ButtonState[0]) {
-      const tmillis_t start_ButtonTime = GetTimeInMillis();
-      if (start_ButtonTime - ButtonTimeHold > 5000) {
-        ButtonTimeHold = start_ButtonTime;
-        std::array<uint8_t, 5> ar = {0, 3, static_cast<int>(UserTCPprotocol::Type::DATA),
-                                     static_cast<int>(UserTCPprotocol::Data::BUTTON), 2};
-        sentSocData(sockfd, ar);
-      }
-    } else {
-      ButtonTimeHold = GetTimeInMillis();
-    }
-  }
-}
-// void set_channel(int gpioPin, int mode) { digitalWrite(gpioPin, mode); };
 void DoCmd(int sockfd, uint8_t data[]) {
   // 1. COMMUNICATION
   if (data[0] == static_cast<int>(UserTCPprotocol::Type::COMMUNICATION)) {
@@ -385,7 +344,6 @@ void DisplayAnimation(const FileInfo *file, RGBMatrix *matrix, FrameCanvas *offs
   rgb_matrix::StreamReader reader(file->content_stream);
   while (!interrupt_received && !breakAnimationLoop) {
     TCPread();
-    read_keys(Button);
     if (TLstate == 1) {
       uint32_t delay_us = 0;
       int seqInd = 0;
@@ -403,7 +361,6 @@ void DisplayAnimation(const FileInfo *file, RGBMatrix *matrix, FrameCanvas *offs
         const tmillis_t time_already_spent = GetTimeInMillis() - start_wait_ms;
         SleepMillis(anim_delay_ms - time_already_spent);
         TCPread();
-        read_keys(Button);
       }
       reader.Rewind();
     } else if (TLstate == 0) {
@@ -450,7 +407,7 @@ void loadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName) {
       s = std::to_string(fName[imgarg]);
       s.insert(0, s2);
       readImages(&frames[imgarg], s.append(".gif"));
-      printf("readImages path: %s\n", s);
+      printf("readImages path: %s\n", s.c_str());
       if (frames[imgarg].size() > 1) {
         Magick::coalesceImages(&image_sequence[imgarg], frames[imgarg].begin(), frames[imgarg].end());
       } else {
@@ -547,8 +504,6 @@ static void SetupUnicornPins() {
   digitalWrite(UniconLight0, CM_OFF);
   digitalWrite(UniconLight1, CM_OFF);
   digitalWrite(UniconLight2, CM_OFF);
-
-  pinMode(Button, INPUT);
 }
 
 static void ConnectToServer() {
@@ -702,7 +657,6 @@ int main(int argc, char *argv[]) {
   fprintf(stderr, "Entering processing loop\n");
 
   do {
-    read_keys(Button);
     // SleepMillis(200);
     TCPread();
     if (TLstate) {
@@ -720,7 +674,7 @@ int main(int argc, char *argv[]) {
     delete matrix;
   } catch (std::exception &e) {
     std::string err_msg = e.what();
-    fprintf(stderr, "catch err: %s\n", err_msg);
+    fprintf(stderr, "catch err: %s\n", err_msg.c_str());
     return false;
   }
 
