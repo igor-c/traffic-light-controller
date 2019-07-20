@@ -1,4 +1,4 @@
-CXXFLAGS=-Wall -O3 -g -Wextra -Wno-unused-parameter
+CXXFLAGS=-Wall -O3 -g -Wextra -Wno-unused-parameter -Wno-unused-variable
 OBJECTS=client.o
 BINARIES=client
 
