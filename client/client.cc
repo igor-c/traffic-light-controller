@@ -30,19 +30,17 @@
 #include "pixel-mapper.h"
 
 #define IPaddr "192.168.88.100"
-#define PORT "1235"      // the port client will be connecting to
-#define MAXDATASIZE 1024 // max number of bytes we can get at once
+#define PORT "1235"       // the port client will be connecting to
+#define MAXDATASIZE 1024  // max number of bytes we can get at once
 
 constexpr bool kDoCenter = false;
 
 using tmillis_t = int64_t;
 
-using rgb_matrix::RGBMatrix;
-
 struct FileInfo {
-  rgb_matrix::StreamIO *content_stream;
-  std::vector<bool> UnicolLightL[3]; //[3]={false,false,false}
-  std::vector<bool> UnicolLightR[3]; //[3]={false,false,false}
+  rgb_matrix::StreamIO* content_stream;
+  std::vector<bool> UnicolLightL[3];  //[3]={false,false,false}
+  std::vector<bool> UnicolLightR[3];  //[3]={false,false,false}
 };
 
 class UserTCPprotocol {
@@ -51,7 +49,13 @@ class UserTCPprotocol {
   enum class Communication : uint8_t { WHO, ACK, RCV };
   enum class State : uint8_t { STOP, START, RESET };
   enum class Settings : uint8_t { MPANEL };
-  enum class MPanel : uint8_t { SCANMODE, MULTIPLEXING, PWMBIT, BRIGHTNESS, GPIOSLOWDOWN };
+  enum class MPanel : uint8_t {
+    SCANMODE,
+    MULTIPLEXING,
+    PWMBIT,
+    BRIGHTNESS,
+    GPIOSLOWDOWN
+  };
   enum class Data : uint8_t { UNICON, BUTTON, SCENARIO };
   enum class Unicon : uint8_t { LED0, LED1, LED2 };
   enum class Scenario : uint8_t { ALLCOMBINATIONS, NEXTCOMBO };
@@ -65,18 +69,18 @@ class UserTCPprotocol {
 #define CM_OFF 0
 
 static int TLstate = 0;
-static std::vector<FileInfo *> file_imgs;
+static std::vector<FileInfo*> file_imgs;
 static int vsync_multiple = 1;
 static int wait_ms = 125;
-static rgb_matrix::FrameCanvas *offscreen_canvas;
-static RGBMatrix *matrix;
+static rgb_matrix::FrameCanvas* offscreen_canvas;
+static rgb_matrix::RGBMatrix* matrix;
 static bool breakAnimationLoop = false;
 static int currentScenarioNum = 0;
 static int sockfd = -1;
 static bool interrupt_received = false;
 static int clientName = static_cast<int>(UserTCPprotocol::ClientName::TL12);
 
-void LoadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName);
+void LoadScenario(std::vector<FileInfo*>& file_imgs, std::vector<int>& fName);
 
 //------------------------SERVER-------------------------------------------
 
@@ -95,11 +99,11 @@ static void SleepMillis(tmillis_t milli_seconds) {
   nanosleep(&ts, NULL);
 }
 
-void *get_in_addr(struct sockaddr *sa) {
+void* get_in_addr(struct sockaddr* sa) {
   if (sa->sa_family == AF_INET) {
-    return &(((struct sockaddr_in *)sa)->sin_addr);
+    return &(((struct sockaddr_in*)sa)->sin_addr);
   }
-  return &(((struct sockaddr_in6 *)sa)->sin6_addr);
+  return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
 
 void quit(int val) {
@@ -117,7 +121,8 @@ void quit(int val) {
   }
 }
 
-template <class T, size_t N> void sentSocData(int sockfd, std::array<T, N> buf) {
+template <class T, size_t N>
+void sentSocData(int sockfd, std::array<T, N> buf) {
   ssize_t bytes_sent;
   if ((bytes_sent = send(sockfd, buf.data(), buf.size(), 0)) == -1) {
     perror("send");
@@ -135,7 +140,8 @@ void DoCmd(int sockfd, uint8_t data[]) {
     if (data[1] == static_cast<int>(UserTCPprotocol::Communication::WHO)) {
       std::array<uint8_t, 4> ar = {0, 2, 0, clientName};
       sentSocData(sockfd, ar);
-    } else if (data[1] == static_cast<int>(UserTCPprotocol::Communication::ACK)) {
+    } else if (data[1] ==
+               static_cast<int>(UserTCPprotocol::Communication::ACK)) {
       // std::array<uint8_t, 4> ar = {0, 2, 1, 1};
       // sentSocData(sockfd, ar);
     }
@@ -195,7 +201,8 @@ void DoCmd(int sockfd, uint8_t data[]) {
   if (data[1] == static_cast<int>(UserTCPprotocol::Data::SCENARIO)) {
     // NEWCOMBINATIONS, SECRETCOMBO, NEXTCOMBO
     // ALLCOMBINATIONS(0), NEXTCOMBO (1)
-    if (data[2] == static_cast<int>(UserTCPprotocol::Scenario::ALLCOMBINATIONS)) {
+    if (data[2] ==
+        static_cast<int>(UserTCPprotocol::Scenario::ALLCOMBINATIONS)) {
       printf("UserTCPprotocol NEWCOMBINATIONS \n");
       std::vector<int> filename;
       for (int i = 0; i < 10; i++) {
@@ -203,7 +210,8 @@ void DoCmd(int sockfd, uint8_t data[]) {
       }
       breakAnimationLoop = true;
       LoadScenario(file_imgs, filename);
-    } else if (data[2] == static_cast<int>(UserTCPprotocol::Scenario::NEXTCOMBO)) {
+    } else if (data[2] ==
+               static_cast<int>(UserTCPprotocol::Scenario::NEXTCOMBO)) {
       if (data[3] < file_imgs.size()) {
         breakAnimationLoop = true;
         currentScenarioNum = data[3];
@@ -235,8 +243,9 @@ void TCPread() {
     if (numbytes > 0) {
       printf("tcp new array length: %d\n ", numbytes);
       std::memcpy(buffer.data() + sizeof(uint8_t) * ind, buf.data(),
-                  sizeof(uint8_t) * buf.size()); // void * memcpy ( void * destination, const
-                                            // void * source, size_t num );
+                  sizeof(uint8_t) *
+                      buf.size());  // void * memcpy ( void * destination, const
+                                    // void * source, size_t num );
       ind += numbytes;
 
       for (int i = 0; i < numbytes; i++) {
@@ -245,21 +254,24 @@ void TCPread() {
       printf("\nind: %d\n", ind);
 
       static uint16_t size = 0;  // TODO(igorc): make this non-static.
-      while ((size == 0 && ind >= sizeof(size)) || (size > 0 && ind >= size)) // While can process data, process it
+      while ((size == 0 && ind >= sizeof(size)) ||
+             (size > 0 && ind >= size))  // While can process data, process it
       {
-        if (size == 0 && ind >= sizeof(size)) // if size of data has received completely,
-                                              // then store it on our global variable
+        if (size == 0 &&
+            ind >= sizeof(size))  // if size of data has received completely,
+                                  // then store it on our global variable
         {
           size = (uint16_t)(buffer[0] << 8);
           size |= buffer[1];
           printf("tcp msg size: %d\n", size);
         }
-        if (size > 0 && ind >= size + sizeof(size)) // If data has received completely,
-                                                    // then emit our SIGNAL with the data
+        if (size > 0 &&
+            ind >= size + sizeof(size))  // If data has received completely,
+                                         // then emit our SIGNAL with the data
         {
           uint8_t data[1024 * 3];
           memcpy(data, buffer.data() + sizeof(uint8_t) * sizeof(size),
-                 sizeof(uint8_t) * size); // coppy data from temp buffer
+                 sizeof(uint8_t) * size);  // coppy data from temp buffer
 
           for (int i = 0; i < size; i++) {
             printf("%d ", data[i]);
@@ -270,12 +282,16 @@ void TCPread() {
           // sizeof(uint8_t) * (ind - (size + sizeof(size)))); // move all data
           // from temp buffer to 0 after Size void * memmove ( void *
           // destination, const void * source, size_t num );
-          std::memmove(buffer.data(), buffer.data() + size + sizeof(size), ind - (size + sizeof(size)));
-          printf("memmove from: %d  num: %d\n", size + sizeof(size), ind - (size + sizeof(size)));
+          std::memmove(buffer.data(), buffer.data() + size + sizeof(size),
+                       ind - (size + sizeof(size)));
+          printf("memmove from: %d  num: %d\n", size + sizeof(size),
+                 ind - (size + sizeof(size)));
           printf("\n");
           ind -= size + 2;
-          std::memset(buffer.data() + sizeof(uint8_t) * ind, 0,
-                 sizeof(uint8_t) * (buf.size() - ind)); // void * memset ( void * ptr, int
+          std::memset(
+              buffer.data() + sizeof(uint8_t) * ind, 0,
+              sizeof(uint8_t) *
+                  (buf.size() - ind));  // void * memset ( void * ptr, int
 
           // value, size_t num );
           size = 0;
@@ -286,33 +302,44 @@ void TCPread() {
   }
 }
 
-static void InterruptHandler(int signo) { interrupt_received = true; }
+static void InterruptHandler(int signo) {
+  interrupt_received = true;
+}
 
-static void StoreInStream(const Magick::Image &img, int delay_time_us, rgb_matrix::FrameCanvas *scratch,
-                          rgb_matrix::StreamWriter *output) {
+static void StoreInStream(const Magick::Image& img,
+                          int delay_time_us,
+                          rgb_matrix::FrameCanvas* scratch,
+                          rgb_matrix::StreamWriter* output) {
   scratch->Clear();
   const int x_offset = kDoCenter ? (scratch->width() - img.columns()) / 2 : 0;
   const int y_offset = kDoCenter ? (scratch->height() - img.rows()) / 2 : 0;
   for (size_t y = 0; y < img.rows(); ++y) {
     for (size_t x = 0; x < img.columns(); ++x) {
-      const Magick::Color &c = img.pixelColor(x, y);
+      const Magick::Color& c = img.pixelColor(x, y);
       if (c.alphaQuantum() < 256) {
-        scratch->SetPixel(x + x_offset, y + y_offset, ScaleQuantumToChar(c.redQuantum()),
-                          ScaleQuantumToChar(c.greenQuantum()), ScaleQuantumToChar(c.blueQuantum()));
+        scratch->SetPixel(x + x_offset, y + y_offset,
+                          ScaleQuantumToChar(c.redQuantum()),
+                          ScaleQuantumToChar(c.greenQuantum()),
+                          ScaleQuantumToChar(c.blueQuantum()));
       }
     }
   }
   output->Stream(*scratch, delay_time_us);
 }
 
-void DisplayAnimation(const FileInfo *file, RGBMatrix *matrix, rgb_matrix::FrameCanvas *offscreen_canvas, int vsync_multiple) {
+void DisplayAnimation(const FileInfo* file,
+                      rgb_matrix::RGBMatrix* matrix,
+                      rgb_matrix::FrameCanvas* offscreen_canvas,
+                      int vsync_multiple) {
   rgb_matrix::StreamReader reader(file->content_stream);
   while (!interrupt_received && !breakAnimationLoop) {
     TCPread();
     if (TLstate == 1) {
       uint32_t delay_us = 0;
       int seqInd = 0;
-      while (!interrupt_received && reader.GetNext(offscreen_canvas, &delay_us) && !breakAnimationLoop) {
+      while (!interrupt_received &&
+             reader.GetNext(offscreen_canvas, &delay_us) &&
+             !breakAnimationLoop) {
         // printf("unicol Light: UP:%i, MID:%i, BOT:%i\n",
         // file->UnicolLight[0].at(seqInd), file->UnicolLight[1].at(seqInd),
         // file->UnicolLight[2].at(seqInd));
@@ -322,7 +349,8 @@ void DisplayAnimation(const FileInfo *file, RGBMatrix *matrix, rgb_matrix::Frame
         seqInd++;
         const tmillis_t anim_delay_ms = delay_us / 1000;
         const tmillis_t start_wait_ms = GetTimeInMillis();
-        offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, vsync_multiple);
+        offscreen_canvas =
+            matrix->SwapOnVSync(offscreen_canvas, vsync_multiple);
         const tmillis_t time_already_spent = GetTimeInMillis() - start_wait_ms;
         SleepMillis(anim_delay_ms - time_already_spent);
         TCPread();
@@ -335,7 +363,7 @@ void DisplayAnimation(const FileInfo *file, RGBMatrix *matrix, rgb_matrix::Frame
   }
 }
 
-void LoadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName) {
+void LoadScenario(std::vector<FileInfo*>& file_imgs, std::vector<int>& fName) {
   matrix->Clear();
   offscreen_canvas = matrix->CreateFrameCanvas();
 
@@ -362,13 +390,13 @@ void LoadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName) {
     if (fName[imgarg] == 0) {
       image_sequence[imgarg].push_back(emptyImg);
     } else {
-
       s = std::to_string(fName[imgarg]);
       s.insert(0, s2);
       readImages(&frames[imgarg], s.append(".gif"));
       printf("readImages path: %s\n", s.c_str());
       if (frames[imgarg].size() > 1) {
-        Magick::coalesceImages(&image_sequence[imgarg], frames[imgarg].begin(), frames[imgarg].end());
+        Magick::coalesceImages(&image_sequence[imgarg], frames[imgarg].begin(),
+                               frames[imgarg].end());
       } else {
         image_sequence[imgarg].push_back(frames[imgarg][0]);
       }
@@ -377,30 +405,43 @@ void LoadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName) {
 
   std::vector<Magick::Image> calage;
   auto maxValue =
-      std::max({image_sequence[0].size(), image_sequence[1].size(), image_sequence[2].size(), image_sequence[3].size(),
-                image_sequence[4].size(), image_sequence[5].size(), image_sequence[6].size(), image_sequence[7].size(),
+      std::max({image_sequence[0].size(), image_sequence[1].size(),
+                image_sequence[2].size(), image_sequence[3].size(),
+                image_sequence[4].size(), image_sequence[5].size(),
+                image_sequence[6].size(), image_sequence[7].size(),
                 image_sequence[8].size(), image_sequence[9].size()});
   for (size_t i = 0; i < maxValue; ++i) {
     Magick::Image appendedL;
     std::vector<Magick::Image> stackL;
-    stackL.push_back(i < image_sequence[0].size() ? image_sequence[0][i] : emptyImg);
-    stackL.push_back(i < image_sequence[1].size() ? image_sequence[1][i] : emptyImg);
-    stackL.push_back(i < image_sequence[2].size() ? image_sequence[2][i] : emptyImg);
-    stackL.push_back(i < image_sequence[3].size() ? image_sequence[3][i] : emptyImg);
-    stackL.push_back(i < image_sequence[4].size() ? image_sequence[4][i] : emptyImg);
+    stackL.push_back(i < image_sequence[0].size() ? image_sequence[0][i]
+                                                  : emptyImg);
+    stackL.push_back(i < image_sequence[1].size() ? image_sequence[1][i]
+                                                  : emptyImg);
+    stackL.push_back(i < image_sequence[2].size() ? image_sequence[2][i]
+                                                  : emptyImg);
+    stackL.push_back(i < image_sequence[3].size() ? image_sequence[3][i]
+                                                  : emptyImg);
+    stackL.push_back(i < image_sequence[4].size() ? image_sequence[4][i]
+                                                  : emptyImg);
     Magick::appendImages(&appendedL, stackL.begin(), stackL.end());
 
     Magick::Image appendedR;
     std::vector<Magick::Image> stackR;
-    stackR.push_back(i < image_sequence[5].size() ? image_sequence[5][i] : emptyImg);
-    stackR.push_back(i < image_sequence[6].size() ? image_sequence[6][i] : emptyImg);
-    stackR.push_back(i < image_sequence[7].size() ? image_sequence[7][i] : emptyImg);
-    stackR.push_back(i < image_sequence[8].size() ? image_sequence[8][i] : emptyImg);
-    stackR.push_back(i < image_sequence[9].size() ? image_sequence[9][i] : emptyImg);
+    stackR.push_back(i < image_sequence[5].size() ? image_sequence[5][i]
+                                                  : emptyImg);
+    stackR.push_back(i < image_sequence[6].size() ? image_sequence[6][i]
+                                                  : emptyImg);
+    stackR.push_back(i < image_sequence[7].size() ? image_sequence[7][i]
+                                                  : emptyImg);
+    stackR.push_back(i < image_sequence[8].size() ? image_sequence[8][i]
+                                                  : emptyImg);
+    stackR.push_back(i < image_sequence[9].size() ? image_sequence[9][i]
+                                                  : emptyImg);
     Magick::appendImages(&appendedR, stackR.begin(), stackR.end());
 
     std::vector<Magick::Image>::iterator it;
-    for (auto it = stackL.begin(); std::distance(stackL.begin(), it) < 3; ++it) {
+    for (auto it = stackL.begin(); std::distance(stackL.begin(), it) < 3;
+         ++it) {
       int imgWidth = it->columns();
       int imgHeight = it->rows();
       bool isEmptry = true;
@@ -412,11 +453,13 @@ void LoadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName) {
           }
         }
       }
-      file_info->UnicolLightL[std::distance(stackL.begin(), it)].push_back(!isEmptry);
+      file_info->UnicolLightL[std::distance(stackL.begin(), it)].push_back(
+          !isEmptry);
     }
 
     // std::vector<Magick::Image>::iterator it;
-    for (auto it = stackR.begin(); std::distance(stackR.begin(), it) < 3; ++it) {
+    for (auto it = stackR.begin(); std::distance(stackR.begin(), it) < 3;
+         ++it) {
       int imgWidth = it->columns();
       int imgHeight = it->rows();
       bool isEmptry = true;
@@ -428,7 +471,8 @@ void LoadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName) {
           }
         }
       }
-      file_info->UnicolLightR[std::distance(stackR.begin(), it)].push_back(!isEmptry);
+      file_info->UnicolLightR[std::distance(stackR.begin(), it)].push_back(
+          !isEmptry);
     }
 
     Magick::Image appended;
@@ -441,7 +485,7 @@ void LoadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName) {
 
   rgb_matrix::StreamWriter out(file_info->content_stream);
   for (size_t i = 0; i < calage.size(); ++i) {
-    const Magick::Image &img = calage[i];
+    const Magick::Image& img = calage[i];
     int64_t delay_time_us = wait_ms * 1000;
     StoreInStream(img, delay_time_us, offscreen_canvas, &out);
   }
@@ -498,7 +542,8 @@ static void ConnectToServer() {
     fprintf(stderr, "client: failed to connect\n");
   }
 
-  inet_ntop(p->ai_family, get_in_addr((struct sockaddr *)p->ai_addr), s, sizeof s);
+  inet_ntop(p->ai_family, get_in_addr((struct sockaddr*)p->ai_addr), s,
+            sizeof s);
   printf("client: connecting to %s\n", s);
   freeaddrinfo(servinfo);
 }
@@ -506,10 +551,10 @@ static void ConnectToServer() {
 //
 //------------------------MAIN----------------------------------------
 //
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
   Magick::InitializeMagick(*argv);
 
-  RGBMatrix::Options matrix_options;
+  rgb_matrix::RGBMatrix::Options matrix_options;
   matrix_options.rows = 32;
   matrix_options.cols = 32;
   matrix_options.chain_length = 1;
@@ -622,7 +667,8 @@ int main(int argc, char *argv[]) {
     TCPread();
     if (TLstate) {
       breakAnimationLoop = false;
-      DisplayAnimation(file_imgs[currentScenarioNum], matrix, offscreen_canvas, vsync_multiple);
+      DisplayAnimation(file_imgs[currentScenarioNum], matrix, offscreen_canvas,
+                       vsync_multiple);
     }
   } while (!interrupt_received);
 
@@ -633,7 +679,7 @@ int main(int argc, char *argv[]) {
     close(sockfd);
     matrix->Clear();
     delete matrix;
-  } catch (std::exception &e) {
+  } catch (std::exception& e) {
     std::string err_msg = e.what();
     fprintf(stderr, "catch err: %s\n", err_msg.c_str());
     return false;
