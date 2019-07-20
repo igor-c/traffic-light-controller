@@ -84,7 +84,8 @@ void set_channel(int channel, int mode) { digitalWrite(Button + channel, mode); 
 #define PORT "1235"      // the port client will be connecting to
 #define MAXDATASIZE 1024 // max number of bytes we can get at once
 
-int sockfd, numbytes, ind = 0;
+int sockfd = -1;
+int numbytes, ind = 0;
 uint16_t size = 0;
 std::array<uint8_t, MAXDATASIZE> buf;
 std::array<uint8_t, MAXDATASIZE> buffer;
@@ -534,54 +535,10 @@ void loadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName) {
   }
   printf("file_imgs size: %i\n", file_imgs.size());
 }
+
 void setCurrentScenario(int num) {}
-//
-//------------------------MAIN----------------------------------------
-//
-int main(int argc, char *argv[]) {
-  Magick::InitializeMagick(*argv);
-  matrix_options.rows = 32;
-  matrix_options.cols = 32;
-  matrix_options.chain_length = 5;
-  matrix_options.parallel = 2;
-  matrix_options.scan_mode = 0;
-  matrix_options.multiplexing = 2;
-  matrix_options.led_rgb_sequence = "BGR";
-  matrix_options.pwm_bits = 7;
-  matrix_options.brightness = 70;
-  runtime_opt.gpio_slowdown = 2;
 
-  int opt;
-  while ((opt = getopt(argc, argv, "n:s:m:")) != -1) {
-    switch (opt) {
-    case 'n': {
-      printf("indName: %s\n", optarg);
-      int indName = atoi(optarg);
-      printf("indName convert atoi: %i\n", indName);
-      if (indName == 1)
-        clientName = static_cast<int>(UserTCPprotocol::ClientName::TL12);
-      else if (indName == 2)
-        clientName = static_cast<int>(UserTCPprotocol::ClientName::TL34);
-      else if (indName == 3)
-        clientName = static_cast<int>(UserTCPprotocol::ClientName::TL56);
-      else if (indName == 4)
-        clientName = static_cast<int>(UserTCPprotocol::ClientName::TL78);
-    } break;
-    case 's': {
-      printf("scan_mode: %s\n", optarg);
-      int scan_mode = atoi(optarg);
-      printf("scan_mode convert atoi: %i\n", scan_mode);
-      matrix_options.scan_mode = scan_mode;
-    } break;
-    case 'm': {
-      printf("multiplexing: %s\n", optarg);
-      int multiplexing = atoi(optarg);
-      printf("multiplexing convert atoi: %i\n", multiplexing);
-      matrix_options.multiplexing = multiplexing;
-    } break;
-    }
-  }
-
+static void SetupUnicornPins() {
   wiringPiSetup();
   pinMode(UniconLight0, OUTPUT);
   pinMode(UniconLight1, OUTPUT);
@@ -592,7 +549,9 @@ int main(int argc, char *argv[]) {
   digitalWrite(UniconLight2, CM_OFF);
 
   pinMode(Button, INPUT);
+}
 
+static void ConnectToServer() {
   struct addrinfo hints, *servinfo, *p;
   int rv;
   char s[INET6_ADDRSTRLEN];
@@ -629,6 +588,62 @@ int main(int argc, char *argv[]) {
   inet_ntop(p->ai_family, get_in_addr((struct sockaddr *)p->ai_addr), s, sizeof s);
   printf("client: connecting to %s\n", s);
   freeaddrinfo(servinfo);
+}
+
+//
+//------------------------MAIN----------------------------------------
+//
+int main(int argc, char *argv[]) {
+  Magick::InitializeMagick(*argv);
+  matrix_options.rows = 32;
+  matrix_options.cols = 32;
+  matrix_options.chain_length = 1;
+  matrix_options.parallel = 1;
+  matrix_options.scan_mode = 0;
+  matrix_options.multiplexing = 2;
+  matrix_options.led_rgb_sequence = "BGR";
+  matrix_options.pwm_bits = 7;
+  matrix_options.brightness = 70;
+  runtime_opt.gpio_slowdown = 2;
+
+  int opt;
+  while ((opt = getopt(argc, argv, "n:s:m:")) != -1) {
+    switch (opt) {
+      case 'n': {
+        printf("indName: %s\n", optarg);
+        int indName = atoi(optarg);
+        printf("indName convert atoi: %i\n", indName);
+        if (indName == 1)
+          clientName = static_cast<int>(UserTCPprotocol::ClientName::TL12);
+        else if (indName == 2)
+          clientName = static_cast<int>(UserTCPprotocol::ClientName::TL34);
+        else if (indName == 3)
+          clientName = static_cast<int>(UserTCPprotocol::ClientName::TL56);
+        else if (indName == 4)
+          clientName = static_cast<int>(UserTCPprotocol::ClientName::TL78);
+        break;
+      }
+      case 's': {
+        printf("scan_mode: %s\n", optarg);
+        int scan_mode = atoi(optarg);
+        printf("scan_mode convert atoi: %i\n", scan_mode);
+        matrix_options.scan_mode = scan_mode;
+        break;
+      }
+      case 'm': {
+        printf("multiplexing: %s\n", optarg);
+        int multiplexing = atoi(optarg);
+        printf("multiplexing convert atoi: %i\n", multiplexing);
+        matrix_options.multiplexing = multiplexing;
+        break;
+      }
+    }
+  }
+
+  SetupUnicornPins();
+
+  ConnectToServer();
+
   //
   //------------------------ANIMATION----------------------------------------
   //
@@ -674,16 +689,21 @@ int main(int argc, char *argv[]) {
   // matrix_options.pwm_bits = 7;
   // matrix_options.brightness = 70;
   // runtime_opt.gpio_slowdown = 2;
+
   matrix = CreateMatrixFromOptions(matrix_options, runtime_opt);
   if (matrix == NULL) {
     return 1;
   }
+
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
   signal(SIGTSTP, InterruptHandler);
 
+  fprintf(stderr, "Entering processing loop\n");
+
   do {
     read_keys(Button);
+    // SleepMillis(200);
     TCPread();
     if (TLstate) {
       breakAnimationLoop = false;
