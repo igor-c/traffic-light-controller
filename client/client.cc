@@ -1,92 +1,52 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
+#include <cstdlib>
 #include <iostream>
 #include <map>
 #include <string>
 #include <vector>
 
-#include "content-streamer.h"
-#include "led-matrix.h"
-#include "pixel-mapper.h"
-#include <Magick++.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <magick/image.h>
-#include <math.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
-// #include <boost/chrono.hpp>
-// #include <boost/thread/thread.hpp>
+
+#include <Magick++.h>
+#include <magick/image.h>
 #include <wiringPi.h>
 
-// #include "header.h"
+#include "content-streamer.h"
+#include "led-matrix.h"
+#include "pixel-mapper.h"
 
-typedef int64_t tmillis_t;
-static const tmillis_t distant_future = (1LL << 40); // that is a while.
-static tmillis_t GetTimeInMillis() {
-  struct timeval tp;
-  gettimeofday(&tp, NULL);
-  return tp.tv_sec * 1000 + tp.tv_usec / 1000;
-}
-int TLstate = 0;
-using rgb_matrix::Canvas;
-using rgb_matrix::FrameCanvas;
-using rgb_matrix::GPIO;
+#define IPaddr "192.168.88.100"
+#define PORT "1235"      // the port client will be connecting to
+#define MAXDATASIZE 1024 // max number of bytes we can get at once
+
+constexpr bool kDoCenter = false;
+
+using tmillis_t = int64_t;
+
 using rgb_matrix::RGBMatrix;
-using rgb_matrix::StreamReader;
+
 struct FileInfo {
   rgb_matrix::StreamIO *content_stream;
   std::vector<bool> UnicolLightL[3]; //[3]={false,false,false}
   std::vector<bool> UnicolLightR[3]; //[3]={false,false,false}
 };
 
-std::vector<FileInfo *> file_imgs;
-RGBMatrix::Options matrix_options;
-rgb_matrix::RuntimeOptions runtime_opt;
-int vsync_multiple = 1;
-bool do_center = false;
-// int wait_ms = 67;
-int wait_ms = 125;
-FrameCanvas *offscreen_canvas;
-FileInfo *file_info = NULL;
-void loadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName);
-
-RGBMatrix *matrix;
-//------------------------SERVER-------------------------------------------
-#define UniconLight0 8
-#define UniconLight1 9
-#define UniconLight2 27
-#define CM_ON 1
-#define CM_OFF 0
-bool breakAnimationLoop = false;
-int currentScenarioNum = 0;
-
-  // constexpr size_t length(T(&)[N]) { return N; }
-  // using namespace std;
-  // #define IPaddr "127.0.0.1"
-#define IPaddr "192.168.88.100"
-#define PORT "1235"      // the port client will be connecting to
-#define MAXDATASIZE 1024 // max number of bytes we can get at once
-
-int sockfd = -1;
-int numbytes, ind = 0;
-uint16_t size = 0;
-std::array<uint8_t, MAXDATASIZE> buf;
-std::array<uint8_t, MAXDATASIZE> buffer;
-
 class UserTCPprotocol {
-public:
+ public:
   enum class Type : uint8_t { COMMUNICATION, STATE, SETTINGS, DATA };
   enum class Communication : uint8_t { WHO, ACK, RCV };
   enum class State : uint8_t { STOP, START, RESET };
@@ -98,15 +58,50 @@ public:
   enum class ClientName : uint8_t { TL12, TL34, TL56, TL78 };
 };
 
-int clientName = static_cast<int>(UserTCPprotocol::ClientName::TL12);
+#define UniconLight0 8
+#define UniconLight1 9
+#define UniconLight2 27
+#define CM_ON 1
+#define CM_OFF 0
 
-// get sockaddr, IPv4 or IPv6:
+static int TLstate = 0;
+static std::vector<FileInfo *> file_imgs;
+static int vsync_multiple = 1;
+static int wait_ms = 125;
+static rgb_matrix::FrameCanvas *offscreen_canvas;
+static RGBMatrix *matrix;
+static bool breakAnimationLoop = false;
+static int currentScenarioNum = 0;
+static int sockfd = -1;
+static bool interrupt_received = false;
+static int clientName = static_cast<int>(UserTCPprotocol::ClientName::TL12);
+
+void LoadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName);
+
+//------------------------SERVER-------------------------------------------
+
+static tmillis_t GetTimeInMillis() {
+  struct timeval tp;
+  gettimeofday(&tp, NULL);
+  return tp.tv_sec * 1000 + tp.tv_usec / 1000;
+}
+
+static void SleepMillis(tmillis_t milli_seconds) {
+  if (milli_seconds <= 0)
+    return;
+  struct timespec ts;
+  ts.tv_sec = milli_seconds / 1000;
+  ts.tv_nsec = (milli_seconds % 1000) * 1000000;
+  nanosleep(&ts, NULL);
+}
+
 void *get_in_addr(struct sockaddr *sa) {
   if (sa->sa_family == AF_INET) {
     return &(((struct sockaddr_in *)sa)->sin_addr);
   }
   return &(((struct sockaddr_in6 *)sa)->sin6_addr);
 }
+
 void quit(int val) {
   while (1) {
     std::cout << "Press 'q' or 'Q'  and ENTER to quit\n";
@@ -136,20 +131,18 @@ template <class T, size_t N> void sentSocData(int sockfd, std::array<T, N> buf) 
 }
 
 void DoCmd(int sockfd, uint8_t data[]) {
-  // 1. COMMUNICATION
   if (data[0] == static_cast<int>(UserTCPprotocol::Type::COMMUNICATION)) {
     if (data[1] == static_cast<int>(UserTCPprotocol::Communication::WHO)) {
       std::array<uint8_t, 4> ar = {0, 2, 0, clientName};
       sentSocData(sockfd, ar);
-    }
-    // 2.
-    else if (data[1] == static_cast<int>(UserTCPprotocol::Communication::ACK)) {
+    } else if (data[1] == static_cast<int>(UserTCPprotocol::Communication::ACK)) {
       // std::array<uint8_t, 4> ar = {0, 2, 1, 1};
       // sentSocData(sockfd, ar);
     }
+    return;
   }
-  // 2. STATE
-  else if (data[0] == static_cast<int>(UserTCPprotocol::Type::STATE)) {
+
+  if (data[0] == static_cast<int>(UserTCPprotocol::Type::STATE)) {
     printf("UserTCPprotocol STATE ");
     if (data[1] == static_cast<int>(UserTCPprotocol::State::STOP)) {
       printf("OFF\n");
@@ -158,67 +151,73 @@ void DoCmd(int sockfd, uint8_t data[]) {
       printf("ON\n");
       TLstate = 1;
     }
+    return;
   }
-  // 3. SETTINGS
-  else if (data[0] == static_cast<int>(UserTCPprotocol::Type::SETTINGS)) {
+
+  if (data[0] == static_cast<int>(UserTCPprotocol::Type::SETTINGS)) {
     printf("UserTCPprotocol SETTINGS ");
+    return;
   }
-  // 4. DATA (3)
-  else if (data[0] == static_cast<int>(UserTCPprotocol::Type::DATA)) {
-    printf("UserTCPprotocol DATA ");
-    // 4.1 UNICON (0)
-    if (data[1] == static_cast<int>(UserTCPprotocol::Data::UNICON)) {
-      if (data[2] == static_cast<int>(UserTCPprotocol::Unicon::LED0)) {
-        if (data[3] == 0) {
-          printf("ON\n");
-          digitalWrite(UniconLight0, CM_OFF);
-        } else if (data[3] == 2) {
-          printf("OFF\n");
-          digitalWrite(UniconLight0, CM_ON);
-        }
-      } else if (data[2] == static_cast<int>(UserTCPprotocol::Unicon::LED1)) {
-        if (data[3] == 0) {
-          printf("ON\n");
-          digitalWrite(UniconLight1, CM_OFF);
-        } else if (data[3] == 2) {
-          printf("OFF\n");
-          digitalWrite(UniconLight1, CM_ON);
-        }
-      } else if (data[2] == static_cast<int>(UserTCPprotocol::Unicon::LED2)) {
-        if (data[3] == 0) {
-          printf("ON\n");
-          digitalWrite(UniconLight2, CM_OFF);
-        } else if (data[3] == 2) {
-          printf("OFF\n");
-          digitalWrite(UniconLight2, CM_ON);
-        }
+
+  if (data[0] != static_cast<int>(UserTCPprotocol::Type::DATA))
+    return;
+
+  printf("UserTCPprotocol DATA ");
+  if (data[1] == static_cast<int>(UserTCPprotocol::Data::UNICON)) {
+    if (data[2] == static_cast<int>(UserTCPprotocol::Unicon::LED0)) {
+      if (data[3] == 0) {
+        printf("ON\n");
+        digitalWrite(UniconLight0, CM_OFF);
+      } else if (data[3] == 2) {
+        printf("OFF\n");
+        digitalWrite(UniconLight0, CM_ON);
+      }
+    } else if (data[2] == static_cast<int>(UserTCPprotocol::Unicon::LED1)) {
+      if (data[3] == 0) {
+        printf("ON\n");
+        digitalWrite(UniconLight1, CM_OFF);
+      } else if (data[3] == 2) {
+        printf("OFF\n");
+        digitalWrite(UniconLight1, CM_ON);
+      }
+    } else if (data[2] == static_cast<int>(UserTCPprotocol::Unicon::LED2)) {
+      if (data[3] == 0) {
+        printf("ON\n");
+        digitalWrite(UniconLight2, CM_OFF);
+      } else if (data[3] == 2) {
+        printf("OFF\n");
+        digitalWrite(UniconLight2, CM_ON);
       }
     }
-    // 4.2  SCENARIO (2)
-    else if (data[1] == static_cast<int>(UserTCPprotocol::Data::SCENARIO)) {
-      // NEWCOMBINATIONS, SECRETCOMBO, NEXTCOMBO
-      // ALLCOMBINATIONS(0), NEXTCOMBO (1)
-      if (data[2] == static_cast<int>(UserTCPprotocol::Scenario::ALLCOMBINATIONS)) {
-        printf("UserTCPprotocol NEWCOMBINATIONS \n");
-        std::vector<int> filename;
-        for (int i = 0; i < 10; i++) {
-          filename.push_back(data[4 + i]);
-        }
+    return;
+  }
+
+  if (data[1] == static_cast<int>(UserTCPprotocol::Data::SCENARIO)) {
+    // NEWCOMBINATIONS, SECRETCOMBO, NEXTCOMBO
+    // ALLCOMBINATIONS(0), NEXTCOMBO (1)
+    if (data[2] == static_cast<int>(UserTCPprotocol::Scenario::ALLCOMBINATIONS)) {
+      printf("UserTCPprotocol NEWCOMBINATIONS \n");
+      std::vector<int> filename;
+      for (int i = 0; i < 10; i++) {
+        filename.push_back(data[4 + i]);
+      }
+      breakAnimationLoop = true;
+      LoadScenario(file_imgs, filename);
+    } else if (data[2] == static_cast<int>(UserTCPprotocol::Scenario::NEXTCOMBO)) {
+      if (data[3] < file_imgs.size()) {
         breakAnimationLoop = true;
-        loadScenario(file_imgs, filename);
-      } else if (data[2] == static_cast<int>(UserTCPprotocol::Scenario::NEXTCOMBO)) {
-        if (data[3] < file_imgs.size()) {
-          breakAnimationLoop = true;
-          currentScenarioNum = data[3];
-        }
+        currentScenarioNum = data[3];
       }
     }
   }
 }
-volatile bool interrupt_received = false;
+
 void TCPread() {
-  // do {
-  // handle data from a server
+  // TODO(igorc): Make these non-static.
+  static int numbytes, ind = 0;
+  static std::array<uint8_t, MAXDATASIZE> buf;
+  static std::array<uint8_t, MAXDATASIZE> buffer;
+
   if ((numbytes = recv(sockfd, &buf, MAXDATASIZE - 1, 0)) <= 0) {
     if (numbytes == 0) {
       printf("Connection closed\n");
@@ -235,8 +234,8 @@ void TCPread() {
     // we got some data from a client
     if (numbytes > 0) {
       printf("tcp new array length: %d\n ", numbytes);
-      memcpy(buffer.data() + sizeof(uint8_t) * ind, buf.data(),
-             sizeof(uint8_t) * buf.size()); // void * memcpy ( void * destination, const
+      std::memcpy(buffer.data() + sizeof(uint8_t) * ind, buf.data(),
+                  sizeof(uint8_t) * buf.size()); // void * memcpy ( void * destination, const
                                             // void * source, size_t num );
       ind += numbytes;
 
@@ -245,6 +244,7 @@ void TCPread() {
       }
       printf("\nind: %d\n", ind);
 
+      static uint16_t size = 0;  // TODO(igorc): make this non-static.
       while ((size == 0 && ind >= sizeof(size)) || (size > 0 && ind >= size)) // While can process data, process it
       {
         if (size == 0 && ind >= sizeof(size)) // if size of data has received completely,
@@ -270,11 +270,11 @@ void TCPread() {
           // sizeof(uint8_t) * (ind - (size + sizeof(size)))); // move all data
           // from temp buffer to 0 after Size void * memmove ( void *
           // destination, const void * source, size_t num );
-          memmove(buffer.data(), buffer.data() + size + sizeof(size), ind - (size + sizeof(size)));
+          std::memmove(buffer.data(), buffer.data() + size + sizeof(size), ind - (size + sizeof(size)));
           printf("memmove from: %d  num: %d\n", size + sizeof(size), ind - (size + sizeof(size)));
           printf("\n");
           ind -= size + 2;
-          memset(buffer.data() + sizeof(uint8_t) * ind, 0,
+          std::memset(buffer.data() + sizeof(uint8_t) * ind, 0,
                  sizeof(uint8_t) * (buf.size() - ind)); // void * memset ( void * ptr, int
 
           // value, size_t num );
@@ -282,53 +282,17 @@ void TCPread() {
           DoCmd(sockfd, data);
         }
       }
-      //-------------------
-      // while ((size == 0 && buffer.size() >= 2) || (size > 0 && buffer.size()
-      // >= size)) // While can process data, process it
-      // {
-      //   if (size == 0 && buffer.size() >= 2) // if size of data has received
-      //   completely, then store it on our global variable
-      //   {
-      //     size = ArrayToInt(buffer.mid(0, 2));
-      //     buffer.erase(vec.begin() + 1, vec.begin() + 3);
-      //   }
-      //   if (size > 0 && buffer.size() >= size) // If data has received
-      //   completely, then emit our SIGNAL with the data
-      //   {
-      //     QByteArray data = buffer.mid(0, size);
-      //     buffer.remove(0, size);
-      //     size = 0;
-      //     // qDebug() <<"2. GET MSG: "<<data;
-
-      //     quint8 array[data.size()];
-      //     memcpy(array, data.data(), data.count());
-      //     QString strData;
-      //     for (int i = 0; i < data.count(); i++) {
-      //       strData.append(QString::number((quint8)data.at(i)).append(" "));
-      //     }
-      //     DoCmd(sockfd, data);
-      //   }
-      // }
     }
   }
-  //} while (do_forever && !interrupt_received);
 }
-//------------------------ANIMATION----------------------------------------
 
 static void InterruptHandler(int signo) { interrupt_received = true; }
-static void SleepMillis(tmillis_t milli_seconds) {
-  if (milli_seconds <= 0)
-    return;
-  struct timespec ts;
-  ts.tv_sec = milli_seconds / 1000;
-  ts.tv_nsec = (milli_seconds % 1000) * 1000000;
-  nanosleep(&ts, NULL);
-}
-static void StoreInStream(const Magick::Image &img, int delay_time_us, bool do_center, rgb_matrix::FrameCanvas *scratch,
+
+static void StoreInStream(const Magick::Image &img, int delay_time_us, rgb_matrix::FrameCanvas *scratch,
                           rgb_matrix::StreamWriter *output) {
   scratch->Clear();
-  const int x_offset = do_center ? (scratch->width() - img.columns()) / 2 : 0;
-  const int y_offset = do_center ? (scratch->height() - img.rows()) / 2 : 0;
+  const int x_offset = kDoCenter ? (scratch->width() - img.columns()) / 2 : 0;
+  const int y_offset = kDoCenter ? (scratch->height() - img.rows()) / 2 : 0;
   for (size_t y = 0; y < img.rows(); ++y) {
     for (size_t x = 0; x < img.columns(); ++x) {
       const Magick::Color &c = img.pixelColor(x, y);
@@ -340,7 +304,8 @@ static void StoreInStream(const Magick::Image &img, int delay_time_us, bool do_c
   }
   output->Stream(*scratch, delay_time_us);
 }
-void DisplayAnimation(const FileInfo *file, RGBMatrix *matrix, FrameCanvas *offscreen_canvas, int vsync_multiple) {
+
+void DisplayAnimation(const FileInfo *file, RGBMatrix *matrix, rgb_matrix::FrameCanvas *offscreen_canvas, int vsync_multiple) {
   rgb_matrix::StreamReader reader(file->content_stream);
   while (!interrupt_received && !breakAnimationLoop) {
     TCPread();
@@ -369,31 +334,25 @@ void DisplayAnimation(const FileInfo *file, RGBMatrix *matrix, FrameCanvas *offs
     }
   }
 }
-void loadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName) {
-  // matrix = CreateMatrixFromOptions(matrix_options, runtime_opt);
-  // if (matrix == NULL) {
-  //   return 1;
-  // }
 
+void LoadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName) {
   matrix->Clear();
   offscreen_canvas = matrix->CreateFrameCanvas();
 
-  file_info = new FileInfo();
+  FileInfo* file_info = new FileInfo();
   file_info->content_stream = new rgb_matrix::MemStreamIO();
 
   // file_imgs.clear();
-  rgb_matrix::StreamIO *stream_io = NULL;
-
   Magick::Image emptyImg("32x32", "black");
   std::vector<Magick::Image> image_sequence[10];
   std::vector<Magick::Image> frames[10];
 
   for (int imgarg = 0; imgarg < 10; imgarg++) {
-    printf("loadScenario: %i, %i\n", imgarg, fName[imgarg]);
+    printf("LoadScenario: %i, %i\n", imgarg, fName[imgarg]);
 
     // int leading = 4; //6 at max
     // //printf(std::to_string(imgarg*0.000001).substr(8-leading));
-    // std::array<std::string, 18> ar = {"loadScenario:
+    // std::array<std::string, 18> ar = {"LoadScenario:
     // "+std::to_string(imgarg*0.000001).substr(8-leading)}; sentSocData(sockfd,
     // ar);
 
@@ -484,7 +443,7 @@ void loadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName) {
   for (size_t i = 0; i < calage.size(); ++i) {
     const Magick::Image &img = calage[i];
     int64_t delay_time_us = wait_ms * 1000;
-    StoreInStream(img, delay_time_us, do_center, offscreen_canvas, &out);
+    StoreInStream(img, delay_time_us, offscreen_canvas, &out);
   }
 
   if (file_info) {
@@ -493,10 +452,9 @@ void loadScenario(std::vector<FileInfo *> &file_imgs, std::vector<int> &fName) {
   printf("file_imgs size: %i\n", file_imgs.size());
 }
 
-void setCurrentScenario(int num) {}
-
 static void SetupUnicornPins() {
   wiringPiSetup();
+
   pinMode(UniconLight0, OUTPUT);
   pinMode(UniconLight1, OUTPUT);
   pinMode(UniconLight2, OUTPUT);
@@ -550,6 +508,8 @@ static void ConnectToServer() {
 //
 int main(int argc, char *argv[]) {
   Magick::InitializeMagick(*argv);
+
+  RGBMatrix::Options matrix_options;
   matrix_options.rows = 32;
   matrix_options.cols = 32;
   matrix_options.chain_length = 1;
@@ -559,6 +519,8 @@ int main(int argc, char *argv[]) {
   matrix_options.led_rgb_sequence = "BGR";
   matrix_options.pwm_bits = 7;
   matrix_options.brightness = 70;
+
+  rgb_matrix::RuntimeOptions runtime_opt;
   runtime_opt.gpio_slowdown = 2;
 
   int opt;
@@ -643,7 +605,6 @@ int main(int argc, char *argv[]) {
   // matrix_options.led_rgb_sequence = "BGR";
   // matrix_options.pwm_bits = 7;
   // matrix_options.brightness = 70;
-  // runtime_opt.gpio_slowdown = 2;
 
   matrix = CreateMatrixFromOptions(matrix_options, runtime_opt);
   if (matrix == NULL) {
