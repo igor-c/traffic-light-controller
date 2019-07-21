@@ -76,7 +76,7 @@ static rgb_matrix::FrameCanvas* offscreen_canvas;
 static rgb_matrix::RGBMatrix* matrix;
 static bool breakAnimationLoop = false;
 static int currentScenarioNum = 0;
-static int sockfd = -1;
+static int socket_fd = -1;
 static bool interrupt_received = false;
 static int clientName = static_cast<int>(UserTCPprotocol::ClientName::TL12);
 
@@ -121,29 +121,48 @@ void quit(int val) {
   }
 }
 
-template <class T, size_t N>
-void sentSocData(int sockfd, std::array<T, N> buf) {
-  ssize_t bytes_sent;
-  if ((bytes_sent = send(sockfd, buf.data(), buf.size(), 0)) == -1) {
-    perror("send");
-  } else {
-    if (bytes_sent < buf.size()) {
-      printf("sent %d byte out of %d\n", bytes_sent, (int)buf.size());
-    } else {
-      printf("all byte sent %d\n", bytes_sent);
-    }
+static void DisconnectFromServer() {
+  if (socket_fd != -1) {
+    close(socket_fd);
+    socket_fd = -1;
   }
 }
 
-void DoCmd(int sockfd, uint8_t data[]) {
+static void TrySendToServer(const uint8_t* new_data, size_t new_data_len) {
+  static std::vector<std::vector<uint8_t>> buffered;
+
+  if (new_data_len)
+    buffered.emplace_back(new_data, new_data + new_data_len);
+
+  while (!buffered.empty()) {
+    std::vector<uint8_t>& buffer = buffered.front();
+    ssize_t bytes_sent = send(socket_fd, buffer.data(), buffer.size(), 0);
+
+    if (bytes_sent == -1) {
+      if (errno == EINTR)
+        continue;
+      if (errno == EAGAIN || errno == EWOULDBLOCK)
+        return;
+      perror("send() failed");
+      DisconnectFromServer();
+      return;
+    }
+
+    buffer.erase(buffer.begin(), buffer.begin() + bytes_sent);
+    if (buffer.empty())
+      buffered.erase(buffered.begin());
+  }
+}
+
+void DoCmd(uint8_t data[]) {
   if (data[0] == static_cast<int>(UserTCPprotocol::Type::COMMUNICATION)) {
     if (data[1] == static_cast<int>(UserTCPprotocol::Communication::WHO)) {
-      std::array<uint8_t, 4> ar = {0, 2, 0, clientName};
-      sentSocData(sockfd, ar);
+      uint8_t ar[] = {0, 2, 0, clientName};
+      TrySendToServer(ar, sizeof(ar));
     } else if (data[1] ==
                static_cast<int>(UserTCPprotocol::Communication::ACK)) {
       // std::array<uint8_t, 4> ar = {0, 2, 1, 1};
-      // sentSocData(sockfd, ar);
+      // TrySendToServer(ar);
     }
     return;
   }
@@ -161,14 +180,14 @@ void DoCmd(int sockfd, uint8_t data[]) {
   }
 
   if (data[0] == static_cast<int>(UserTCPprotocol::Type::SETTINGS)) {
-    printf("UserTCPprotocol SETTINGS ");
+    printf("UserTCPprotocol SETTINGS");
     return;
   }
 
   if (data[0] != static_cast<int>(UserTCPprotocol::Type::DATA))
     return;
 
-  printf("UserTCPprotocol DATA ");
+  printf("UserTCPprotocol DATA");
   if (data[1] == static_cast<int>(UserTCPprotocol::Data::UNICON)) {
     if (data[2] == static_cast<int>(UserTCPprotocol::Unicon::LED0)) {
       if (data[3] == 0) {
@@ -220,85 +239,64 @@ void DoCmd(int sockfd, uint8_t data[]) {
   }
 }
 
-void TCPread() {
-  // TODO(igorc): Make these non-static.
-  static int numbytes, ind = 0;
-  static std::array<uint8_t, MAXDATASIZE> buf;
-  static std::array<uint8_t, MAXDATASIZE> buffer;
+std::vector<uint8_t> ReadSocketCommand() {
+  static uint8_t tmp[1024];
+  static std::vector<uint8_t> cached;
 
-  if ((numbytes = recv(sockfd, &buf, MAXDATASIZE - 1, 0)) <= 0) {
-    if (numbytes == 0) {
-      printf("Connection closed\n");
-      close(sockfd);
-    } else {
-      if (errno != EWOULDBLOCK) {
-        perror("recv failed");
-        close(sockfd);
-        quit(0);
-      }
+  std::vector<uint8_t> result;
+  if (socket_fd == -1)
+    return std::vector<uint8_t>();
+
+  while (true) {
+    // Try to send the data when we can, as we have no proper AsyncIO handling.
+    TrySendToServer(nullptr, 0);
+    if (socket_fd == -1)
+      return std::vector<uint8_t>();
+
+    ssize_t num_bytes = recv(socket_fd, tmp, sizeof(tmp), 0);
+    if (num_bytes == -1) {
+      if (errno == EINTR)
+        continue;
+      if (errno == EAGAIN || errno == EWOULDBLOCK)
+        break;
+      perror("recv() failed");
+      DisconnectFromServer();
+      break;
     }
-    // reconect();
-  } else {
-    // we got some data from a client
-    if (numbytes > 0) {
-      printf("tcp new array length: %d\n ", numbytes);
-      std::memcpy(buffer.data() + sizeof(uint8_t) * ind, buf.data(),
-                  sizeof(uint8_t) *
-                      buf.size());  // void * memcpy ( void * destination, const
-                                    // void * source, size_t num );
-      ind += numbytes;
 
-      for (int i = 0; i < numbytes; i++) {
-        printf("%d ", buffer[i]);
-      }
-      printf("\nind: %d\n", ind);
+    size_t old_cached_size = cached.size();
+    cached.resize(old_cached_size + num_bytes);
+    std::memcpy(cached.data() + old_cached_size, tmp, num_bytes);
+  }
 
-      static uint16_t size = 0;  // TODO(igorc): make this non-static.
-      while ((size == 0 && ind >= sizeof(size)) ||
-             (size > 0 && ind >= size))  // While can process data, process it
-      {
-        if (size == 0 &&
-            ind >= sizeof(size))  // if size of data has received completely,
-                                  // then store it on our global variable
-        {
-          size = (uint16_t)(buffer[0] << 8);
-          size |= buffer[1];
-          printf("tcp msg size: %d\n", size);
-        }
-        if (size > 0 &&
-            ind >= size + sizeof(size))  // If data has received completely,
-                                         // then emit our SIGNAL with the data
-        {
-          uint8_t data[1024 * 3];
-          memcpy(data, buffer.data() + sizeof(uint8_t) * sizeof(size),
-                 sizeof(uint8_t) * size);  // coppy data from temp buffer
+  while (true) {
+    if (cached.size() < 2)
+      return std::vector<uint8_t>();
 
-          for (int i = 0; i < size; i++) {
-            printf("%d ", data[i]);
-          }
-          printf("\n");
-
-          // memmove(buffer.data(), buffer.data() + size + sizeof(size),
-          // sizeof(uint8_t) * (ind - (size + sizeof(size)))); // move all data
-          // from temp buffer to 0 after Size void * memmove ( void *
-          // destination, const void * source, size_t num );
-          std::memmove(buffer.data(), buffer.data() + size + sizeof(size),
-                       ind - (size + sizeof(size)));
-          printf("memmove from: %d  num: %d\n", size + sizeof(size),
-                 ind - (size + sizeof(size)));
-          printf("\n");
-          ind -= size + 2;
-          std::memset(
-              buffer.data() + sizeof(uint8_t) * ind, 0,
-              sizeof(uint8_t) *
-                  (buf.size() - ind));  // void * memset ( void * ptr, int
-
-          // value, size_t num );
-          size = 0;
-          DoCmd(sockfd, data);
-        }
-      }
+    uint16_t packet_size = (uint16_t) (cached[0] << 8) | cached[1];
+    if (packet_size == 0) {
+      // Continue here to make sure empty packet always means no more data.
+      cached.erase(cached.begin(), cached.begin() + 2);
+      continue;
     }
+
+    if (cached.size() < (2 + packet_size))
+      return std::vector<uint8_t>();
+
+    result.resize(packet_size);
+    std::memcpy(result.data(), cached.data() + 2, packet_size);
+    cached.erase(cached.begin(), cached.begin() + 2 + packet_size);
+    return result;
+  }
+}
+
+void ReadSocketAndExecuteCommand() {
+  while (true) {
+    std::vector<uint8_t> command = ReadSocketCommand();
+    if (command.empty())
+      break;
+
+    DoCmd(command.data());
   }
 }
 
@@ -333,7 +331,7 @@ void DisplayAnimation(const FileInfo* file,
                       int vsync_multiple) {
   rgb_matrix::StreamReader reader(file->content_stream);
   while (!interrupt_received && !breakAnimationLoop) {
-    TCPread();
+    ReadSocketAndExecuteCommand();
     if (TLstate == 1) {
       uint32_t delay_us = 0;
       int seqInd = 0;
@@ -353,7 +351,7 @@ void DisplayAnimation(const FileInfo* file,
             matrix->SwapOnVSync(offscreen_canvas, vsync_multiple);
         const tmillis_t time_already_spent = GetTimeInMillis() - start_wait_ms;
         SleepMillis(anim_delay_ms - time_already_spent);
-        TCPread();
+        ReadSocketAndExecuteCommand();
       }
       reader.Rewind();
     } else if (TLstate == 0) {
@@ -381,7 +379,7 @@ void LoadScenario(std::vector<FileInfo*>& file_imgs, std::vector<int>& fName) {
     // int leading = 4; //6 at max
     // //printf(std::to_string(imgarg*0.000001).substr(8-leading));
     // std::array<std::string, 18> ar = {"LoadScenario:
-    // "+std::to_string(imgarg*0.000001).substr(8-leading)}; sentSocData(sockfd,
+    // "+std::to_string(imgarg*0.000001).substr(8-leading)}; TrySendToServer(sockfd,
     // ar);
 
     std::string s;
@@ -508,43 +506,55 @@ static void SetupUnicornPins() {
   digitalWrite(UniconLight2, CM_OFF);
 }
 
-static void ConnectToServer() {
-  struct addrinfo hints, *servinfo, *p;
-  int rv;
-  char s[INET6_ADDRSTRLEN];
+static void ReconnectToServer() {
+  DisconnectFromServer();
 
+  struct addrinfo hints;
   memset(&hints, 0, sizeof hints);
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
 
-  if ((rv = getaddrinfo(IPaddr, PORT, &hints, &servinfo)) != 0) {
+  struct addrinfo* servinfo;
+  int rv = getaddrinfo(IPaddr, PORT, &hints, &servinfo);
+  if (rv != 0) {
     fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
-    quit(1);
+    return;
   }
 
+  struct addrinfo* p;
   for (p = servinfo; p != NULL; p = p->ai_next) {
-    if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
-      perror("client: socket");
+    char s[INET6_ADDRSTRLEN];
+    inet_ntop(p->ai_family, get_in_addr((struct sockaddr*)p->ai_addr), s,
+              sizeof(s));
+    printf("Connecting to %s\n", s);
+
+    socket_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+    if (socket_fd == -1) {
+      perror("socket() failed");
       continue;
     }
-    if (connect(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
-      close(sockfd);
-      perror("client: connect");
+
+    if (connect(socket_fd, p->ai_addr, p->ai_addrlen) == -1) {
+      perror("connect() failed");
+      DisconnectFromServer();
       continue;
     }
+
+    if (fcntl(socket_fd, F_SETFL, fcntl(socket_fd, F_GETFL) | O_NONBLOCK) < 0) {
+      perror("fcntl(O_NONBLOCK) failed");
+      DisconnectFromServer();
+      continue;
+    }
+
     break;
   }
 
-  if (fcntl(sockfd, F_SETFL, fcntl(sockfd, F_GETFL) | O_NONBLOCK) < 0) {
-    perror("client: socket non-blocking mode");
-  }
-  if (p == NULL) {
-    fprintf(stderr, "client: failed to connect\n");
+  if (p) {
+    fprintf(stderr, "Connected to server\n");
+  } else {
+    fprintf(stderr, "Failed to connect to server\n");
   }
 
-  inet_ntop(p->ai_family, get_in_addr((struct sockaddr*)p->ai_addr), s,
-            sizeof s);
-  printf("client: connecting to %s\n", s);
   freeaddrinfo(servinfo);
 }
 
@@ -604,7 +614,7 @@ int main(int argc, char* argv[]) {
 
   SetupUnicornPins();
 
-  ConnectToServer();
+  ReconnectToServer();
 
   //
   //------------------------ANIMATION----------------------------------------
@@ -664,7 +674,7 @@ int main(int argc, char* argv[]) {
 
   do {
     // SleepMillis(200);
-    TCPread();
+    ReadSocketAndExecuteCommand();
     if (TLstate) {
       breakAnimationLoop = false;
       DisplayAnimation(file_imgs[currentScenarioNum], matrix, offscreen_canvas,
@@ -676,7 +686,7 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "Caught signal. Exiting.\n");
   }
   try {
-    close(sockfd);
+    DisconnectFromServer();
     matrix->Clear();
     delete matrix;
   } catch (std::exception& e) {
