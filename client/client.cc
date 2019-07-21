@@ -28,8 +28,7 @@
 
 constexpr bool kDoCenter = false;
 constexpr uint32_t kHoldTimeMs = 125;
-
-using tmillis_t = int64_t;
+constexpr int kVsyncMultiple = 1;
 
 struct FileInfo {
   rgb_matrix::MemStreamIO content_stream;
@@ -65,13 +64,10 @@ class UserTCPprotocol {
 static bool is_traffic_light_started = false;
 static const Magick::Image* empty_image;
 static std::vector<FileInfo*> file_imgs;
-static int vsync_multiple = 1;
 static rgb_matrix::RGBMatrix* matrix;
-static rgb_matrix::FrameCanvas* sequence_loader_canvas = nullptr;
-static rgb_matrix::FrameCanvas* offscreen_canvas;
-static bool need_animation_update = false;
+static bool should_interrupt_animation_loop = false;
 static int currentScenarioNum = 0;
-static bool interrupt_received = false;
+static bool has_received_signal = false;
 static uint8_t clientName =
     static_cast<uint8_t>(UserTCPprotocol::ClientName::TL12);
 
@@ -80,13 +76,13 @@ static void LoadScenario(std::vector<FileInfo*>& file_imgs,
 
 //------------------------SERVER-------------------------------------------
 
-static tmillis_t GetTimeInMillis() {
+static uint64_t GetTimeInMillis() {
   struct timeval tp;
   gettimeofday(&tp, NULL);
   return tp.tv_sec * 1000 + tp.tv_usec / 1000;
 }
 
-static void SleepMillis(tmillis_t milli_seconds) {
+static void SleepMillis(uint64_t milli_seconds) {
   if (milli_seconds <= 0)
     return;
   struct timespec ts;
@@ -183,19 +179,19 @@ void DoCmd(uint8_t* data) {
       for (int i = 0; i < 10; ++i) {
         sequence_ids.push_back(data[4 + i]);
       }
-      need_animation_update = true;
+      should_interrupt_animation_loop = true;
       LoadScenario(file_imgs, sequence_ids);
     } else if (data[2] ==
                static_cast<int>(UserTCPprotocol::Scenario::NEXTCOMBO)) {
       if (data[3] < file_imgs.size()) {
-        need_animation_update = true;
+        should_interrupt_animation_loop = true;
         currentScenarioNum = data[3];
       }
     }
   }
 }
 
-void ReadSocketAndExecuteCommand() {
+void ReadSocketAndExecuteCommands() {
   while (true) {
     std::vector<uint8_t> command = ReadSocketCommand();
     if (command.empty())
@@ -206,38 +202,45 @@ void ReadSocketAndExecuteCommand() {
 }
 
 static void InterruptHandler(int signo) {
-  interrupt_received = true;
+  has_received_signal = true;
+  should_interrupt_animation_loop = true;
 }
 
-void DisplayAnimation(FileInfo* file,
-                      rgb_matrix::RGBMatrix* matrix,
-                      rgb_matrix::FrameCanvas* offscreen_canvas,
-                      int vsync_multiple) {
+void DisplayAnimation() {
+  static rgb_matrix::FrameCanvas* offscreen_canvas = nullptr;
+  if (!offscreen_canvas)
+    offscreen_canvas = matrix->CreateFrameCanvas();
+
+  FileInfo* file = file_imgs[currentScenarioNum];
   rgb_matrix::StreamReader reader(&file->content_stream);
-  while (!interrupt_received && !need_animation_update) {
-    ReadSocketAndExecuteCommand();
-    if (is_traffic_light_started) {
-      uint32_t delay_us = 0;
-      int seqInd = 0;
-      while (!interrupt_received &&
-             reader.GetNext(offscreen_canvas, &delay_us) &&
-             !need_animation_update) {
-        // digitalWrite(UniconLight0, file->UnicolLightL[0].at(seqInd));
-        // digitalWrite(UniconLight1, file->UnicolLightL[1].at(seqInd));
-        // digitalWrite(UniconLight2, file->UnicolLightL[2].at(seqInd));
-        seqInd++;
-        const tmillis_t anim_delay_ms = delay_us / 1000;
-        const tmillis_t start_wait_ms = GetTimeInMillis();
-        offscreen_canvas =
-            matrix->SwapOnVSync(offscreen_canvas, vsync_multiple);
-        const tmillis_t time_already_spent = GetTimeInMillis() - start_wait_ms;
-        SleepMillis(anim_delay_ms - time_already_spent);
-        ReadSocketAndExecuteCommand();
-      }
-      reader.Rewind();
-    } else {
+
+  should_interrupt_animation_loop = false;
+  while (!should_interrupt_animation_loop) {
+    ReadSocketAndExecuteCommands();
+    if (!is_traffic_light_started) {
       file_imgs.clear();
       matrix->Clear();
+      continue;
+    }
+
+    // TODO(igorc): Do not start new rendering loop too early.
+    reader.Rewind();
+    uint32_t hold_time_us = 0;
+    while (!should_interrupt_animation_loop &&
+           reader.GetNext(offscreen_canvas, &hold_time_us)) {
+      uint64_t deadline_time = GetTimeInMillis() + hold_time_us / 1000;
+
+      // digitalWrite(UniconLight0, file->UnicolLightL[0].at(seqInd));
+      // digitalWrite(UniconLight1, file->UnicolLightL[1].at(seqInd));
+      // digitalWrite(UniconLight2, file->UnicolLightL[2].at(seqInd));
+
+      offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, kVsyncMultiple);
+
+      ReadSocketAndExecuteCommands();
+
+      uint64_t cur_time = GetTimeInMillis();
+      if (cur_time < deadline_time)
+        SleepMillis(deadline_time - cur_time);
     }
   }
 }
@@ -324,24 +327,26 @@ static std::vector<Magick::Image> BuildRenderSequence(
 static void AddToMatrixStream(const Magick::Image& img,
                               uint32_t hold_time_us,
                               rgb_matrix::StreamWriter* output) {
-  sequence_loader_canvas->Clear();
-  const int x_offset =
-      kDoCenter ? (sequence_loader_canvas->width() - img.columns()) / 2 : 0;
-  const int y_offset =
-      kDoCenter ? (sequence_loader_canvas->height() - img.rows()) / 2 : 0;
+  static rgb_matrix::FrameCanvas* canvas = nullptr;
+  if (!canvas)
+    canvas = matrix->CreateFrameCanvas();
+
+  canvas->Clear();
+  const int x_offset = kDoCenter ? (canvas->width() - img.columns()) / 2 : 0;
+  const int y_offset = kDoCenter ? (canvas->height() - img.rows()) / 2 : 0;
   for (size_t y = 0; y < img.rows(); ++y) {
     for (size_t x = 0; x < img.columns(); ++x) {
       const Magick::Color& c = img.pixelColor(x, y);
       if (c.alphaQuantum() < 256) {
-        sequence_loader_canvas->SetPixel(x + x_offset, y + y_offset,
-                                         ScaleQuantumToChar(c.redQuantum()),
-                                         ScaleQuantumToChar(c.greenQuantum()),
-                                         ScaleQuantumToChar(c.blueQuantum()));
+        canvas->SetPixel(x + x_offset, y + y_offset,
+                         ScaleQuantumToChar(c.redQuantum()),
+                         ScaleQuantumToChar(c.greenQuantum()),
+                         ScaleQuantumToChar(c.blueQuantum()));
       }
     }
   }
 
-  output->Stream(*sequence_loader_canvas, hold_time_us);
+  output->Stream(*canvas, hold_time_us);
 }
 
 static void LoadScenario(std::vector<FileInfo*>& file_imgs,
@@ -492,7 +497,6 @@ int main(int argc, char* argv[]) {
   if (matrix == NULL) {
     return 1;
   }
-  sequence_loader_canvas = matrix->CreateFrameCanvas();
 
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
@@ -501,16 +505,16 @@ int main(int argc, char* argv[]) {
   fprintf(stderr, "Entering processing loop\n");
 
   do {
-    // SleepMillis(200);
-    ReadSocketAndExecuteCommand();
+    ReadSocketAndExecuteCommands();
     if (is_traffic_light_started) {
-      need_animation_update = false;
-      DisplayAnimation(file_imgs[currentScenarioNum], matrix, offscreen_canvas,
-                       vsync_multiple);
+      DisplayAnimation();
+    } else {
+      // Offload CPU and TCP read is non-blocking.
+      SleepMillis(100);
     }
-  } while (!interrupt_received);
+  } while (!has_received_signal);
 
-  if (interrupt_received) {
+  if (has_received_signal) {
     fprintf(stderr, "Caught signal. Exiting.\n");
   }
 
