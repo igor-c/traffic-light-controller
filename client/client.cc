@@ -1,11 +1,13 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <cstring>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <errno.h>
@@ -29,8 +31,8 @@ using tmillis_t = int64_t;
 
 struct FileInfo {
   rgb_matrix::StreamIO* content_stream;
-  std::vector<bool> UnicolLightL[3];  //[3]={false,false,false}
-  std::vector<bool> UnicolLightR[3];  //[3]={false,false,false}
+  std::vector<bool> UnicolLightL[5];
+  std::vector<bool> UnicolLightR[5];
 };
 
 class UserTCPprotocol {
@@ -69,8 +71,10 @@ static int currentScenarioNum = 0;
 static bool interrupt_received = false;
 static uint8_t clientName =
     static_cast<uint8_t>(UserTCPprotocol::ClientName::TL12);
+static const Magick::Image kEmptyImg("32x32", "black");
 
-void LoadScenario(std::vector<FileInfo*>& file_imgs, std::vector<int>& fName);
+static void LoadScenario(std::vector<FileInfo*>& file_imgs,
+                         const std::vector<int>& img_names);
 
 //------------------------SERVER-------------------------------------------
 
@@ -237,12 +241,9 @@ void DisplayAnimation(const FileInfo* file,
       while (!interrupt_received &&
              reader.GetNext(offscreen_canvas, &delay_us) &&
              !need_animation_update) {
-        // printf("unicol Light: UP:%i, MID:%i, BOT:%i\n",
-        // file->UnicolLight[0].at(seqInd), file->UnicolLight[1].at(seqInd),
-        // file->UnicolLight[2].at(seqInd));
-        digitalWrite(UniconLight0, file->UnicolLightL[0].at(seqInd));
-        digitalWrite(UniconLight1, file->UnicolLightL[1].at(seqInd));
-        digitalWrite(UniconLight2, file->UnicolLightL[2].at(seqInd));
+        // digitalWrite(UniconLight0, file->UnicolLightL[0].at(seqInd));
+        // digitalWrite(UniconLight1, file->UnicolLightL[1].at(seqInd));
+        // digitalWrite(UniconLight2, file->UnicolLightL[2].at(seqInd));
         seqInd++;
         const tmillis_t anim_delay_ms = delay_us / 1000;
         const tmillis_t start_wait_ms = GetTimeInMillis();
@@ -260,130 +261,103 @@ void DisplayAnimation(const FileInfo* file,
   }
 }
 
-void LoadScenario(std::vector<FileInfo*>& file_imgs, std::vector<int>& fName) {
+static void LoadImageSequence(int sequence_id,
+                              std::vector<Magick::Image>* output) {
+  std::vector<Magick::Image> frames;
+  if (sequence_id) {
+    char image_path[256];
+    std::snprintf(image_path, sizeof(image_path), "gif/%d.gif", sequence_id);
+    Magick::readImages(&frames, image_path);
+    printf("readImages for '%s' returned %d images\n", image_path,
+           frames.size());
+  }
+
+  output->clear();
+  if (frames.size() > 1) {
+    Magick::coalesceImages(output, frames.begin(), frames.end());
+  } else if (frames.size() == 1) {
+    output->push_back(std::move(frames[0]));
+  } else {
+    output->push_back(kEmptyImg);
+  }
+}
+
+/*static bool IsImageBlack(const Magick::Image& image) {
+  int image_width = image.columns();
+  int image_height = image.rows();
+  bool isEmptry = true;
+  for (int row = 0; row <= image_height; row++) {
+    for (int column = 0; column <= image_width; column++) {
+      Magick::ColorRGB px = image.pixelColor(column, row);
+      if (px.red() > 0 || px.green() > 0 || px.blue() > 0)
+        return false;
+    }
+  }
+  return true;
+}*/
+
+static std::vector<Magick::Image> BuildRenderSequence(
+    const std::vector<std::vector<Magick::Image>>& image_sequences) {
+  size_t max_sequence_length = 0;
+  for (int i = 0; i < 10; ++i) {
+    if (image_sequences[i].size() > max_sequence_length)
+      max_sequence_length = image_sequences[i].size();
+  }
+
+  std::vector<Magick::Image> result;
+  for (size_t i = 0; i < max_sequence_length; ++i) {
+    // Collect lists of images for left and right sides.
+    std::vector<Magick::Image> stackL;
+    std::vector<Magick::Image> stackR;
+    for (int j = 0; j < 10; ++j) {
+      const Magick::Image& image =
+          (i < image_sequences[j].size() ? image_sequences[j][i] : kEmptyImg);
+      // bool is_black = IsImageBlack(image);
+      if (j >= 5) {
+        // file_info->UnicolLightR[stackR.size()] = !is_black;
+        stackR.push_back(image);
+      } else {
+        // file_info->UnicolLightL[stackL.size()] = !is_black;
+        stackL.push_back(image);
+      }
+    }
+
+    // Build full contiguous images for left and right.
+    Magick::Image side_images[2];
+    Magick::appendImages(&side_images[0], stackR.begin(), stackR.end());
+    Magick::appendImages(&side_images[1], stackL.begin(), stackL.end());
+
+    // Merge and left and right side into the single image for rendering.
+    Magick::Image full_image;
+    Magick::appendImages(&full_image, side_images, side_images + 2, true);
+
+    result.push_back(std::move(full_image));
+  }
+
+  return std::move(result);
+}
+
+static void LoadScenario(std::vector<FileInfo*>& file_imgs,
+                         const std::vector<int>& img_names) {
+  std::vector<std::vector<Magick::Image>> image_sequences;
+  for (int i = 0; i < 10; ++i) {
+    int sequence_id = img_names[i];
+    printf("LoadScenario #%d: image %d\n", i, sequence_id);
+    image_sequences.emplace_back();
+    LoadImageSequence(sequence_id, &image_sequences[i]);
+  }
+
+  std::vector<Magick::Image> render_sequence =
+      BuildRenderSequence(image_sequences);
+
   matrix->Clear();
   offscreen_canvas = matrix->CreateFrameCanvas();
 
   FileInfo* file_info = new FileInfo();
   file_info->content_stream = new rgb_matrix::MemStreamIO();
-
-  // file_imgs.clear();
-  Magick::Image emptyImg("32x32", "black");
-  std::vector<Magick::Image> image_sequence[10];
-  std::vector<Magick::Image> frames[10];
-
-  for (int imgarg = 0; imgarg < 10; imgarg++) {
-    printf("LoadScenario: %i, %i\n", imgarg, fName[imgarg]);
-
-    // int leading = 4; //6 at max
-    // //printf(std::to_string(imgarg*0.000001).substr(8-leading));
-    // std::array<std::string, 18> ar = {"LoadScenario:
-    // "+std::to_string(imgarg*0.000001).substr(8-leading)};
-    // TrySendToServer(sockfd,
-    // ar);
-
-    std::string s;
-    std::string s2("gif/");
-
-    if (fName[imgarg] == 0) {
-      image_sequence[imgarg].push_back(emptyImg);
-    } else {
-      s = std::to_string(fName[imgarg]);
-      s.insert(0, s2);
-      readImages(&frames[imgarg], s.append(".gif"));
-      printf("readImages path: %s\n", s.c_str());
-      if (frames[imgarg].size() > 1) {
-        Magick::coalesceImages(&image_sequence[imgarg], frames[imgarg].begin(),
-                               frames[imgarg].end());
-      } else {
-        image_sequence[imgarg].push_back(frames[imgarg][0]);
-      }
-    }
-  }
-
-  std::vector<Magick::Image> calage;
-  auto maxValue =
-      std::max({image_sequence[0].size(), image_sequence[1].size(),
-                image_sequence[2].size(), image_sequence[3].size(),
-                image_sequence[4].size(), image_sequence[5].size(),
-                image_sequence[6].size(), image_sequence[7].size(),
-                image_sequence[8].size(), image_sequence[9].size()});
-  for (size_t i = 0; i < maxValue; ++i) {
-    Magick::Image appendedL;
-    std::vector<Magick::Image> stackL;
-    stackL.push_back(i < image_sequence[0].size() ? image_sequence[0][i]
-                                                  : emptyImg);
-    stackL.push_back(i < image_sequence[1].size() ? image_sequence[1][i]
-                                                  : emptyImg);
-    stackL.push_back(i < image_sequence[2].size() ? image_sequence[2][i]
-                                                  : emptyImg);
-    stackL.push_back(i < image_sequence[3].size() ? image_sequence[3][i]
-                                                  : emptyImg);
-    stackL.push_back(i < image_sequence[4].size() ? image_sequence[4][i]
-                                                  : emptyImg);
-    Magick::appendImages(&appendedL, stackL.begin(), stackL.end());
-
-    Magick::Image appendedR;
-    std::vector<Magick::Image> stackR;
-    stackR.push_back(i < image_sequence[5].size() ? image_sequence[5][i]
-                                                  : emptyImg);
-    stackR.push_back(i < image_sequence[6].size() ? image_sequence[6][i]
-                                                  : emptyImg);
-    stackR.push_back(i < image_sequence[7].size() ? image_sequence[7][i]
-                                                  : emptyImg);
-    stackR.push_back(i < image_sequence[8].size() ? image_sequence[8][i]
-                                                  : emptyImg);
-    stackR.push_back(i < image_sequence[9].size() ? image_sequence[9][i]
-                                                  : emptyImg);
-    Magick::appendImages(&appendedR, stackR.begin(), stackR.end());
-
-    std::vector<Magick::Image>::iterator it;
-    for (auto it = stackL.begin(); std::distance(stackL.begin(), it) < 3;
-         ++it) {
-      int imgWidth = it->columns();
-      int imgHeight = it->rows();
-      bool isEmptry = true;
-      for (int row = 0; row <= imgHeight; row++) {
-        for (int column = 0; column <= imgWidth; column++) {
-          Magick::ColorRGB px = it->pixelColor(column, row);
-          if (px.red() > 0 || px.green() > 0 || px.blue() > 0) {
-            isEmptry = false;
-          }
-        }
-      }
-      file_info->UnicolLightL[std::distance(stackL.begin(), it)].push_back(
-          !isEmptry);
-    }
-
-    // std::vector<Magick::Image>::iterator it;
-    for (auto it = stackR.begin(); std::distance(stackR.begin(), it) < 3;
-         ++it) {
-      int imgWidth = it->columns();
-      int imgHeight = it->rows();
-      bool isEmptry = true;
-      for (int row = 0; row <= imgHeight; row++) {
-        for (int column = 0; column <= imgWidth; column++) {
-          Magick::ColorRGB px = it->pixelColor(column, row);
-          if (px.red() > 0 || px.green() > 0 || px.blue() > 0) {
-            isEmptry = false;
-          }
-        }
-      }
-      file_info->UnicolLightR[std::distance(stackR.begin(), it)].push_back(
-          !isEmptry);
-    }
-
-    Magick::Image appended;
-    std::vector<Magick::Image> stack;
-    stack.push_back(appendedR);
-    stack.push_back(appendedL);
-    Magick::appendImages(&appended, stack.begin(), stack.end(), true);
-    calage.push_back(appended);
-  }
-
   rgb_matrix::StreamWriter out(file_info->content_stream);
-  for (size_t i = 0; i < calage.size(); ++i) {
-    const Magick::Image& img = calage[i];
+  for (size_t i = 0; i < render_sequence.size(); ++i) {
+    const Magick::Image& img = render_sequence[i];
     int64_t delay_time_us = wait_ms * 1000;
     StoreInStream(img, delay_time_us, offscreen_canvas, &out);
   }

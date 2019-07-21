@@ -171,7 +171,7 @@ static void FinishConnecting() {
       return;
 
     if (errno == EINPROGRESS) {
-      fprintf(stderr, "Will continue async connect to the server\n");
+      // fprintf(stderr, "Will continue async connect to the server\n");
       return;
     }
 
