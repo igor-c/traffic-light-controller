@@ -63,6 +63,7 @@ class UserTCPprotocol {
 #define CM_OFF 0
 
 static bool is_traffic_light_started = false;
+static const Magick::Image* empty_image;
 static std::vector<FileInfo*> file_imgs;
 static int vsync_multiple = 1;
 static rgb_matrix::RGBMatrix* matrix;
@@ -73,7 +74,6 @@ static int currentScenarioNum = 0;
 static bool interrupt_received = false;
 static uint8_t clientName =
     static_cast<uint8_t>(UserTCPprotocol::ClientName::TL12);
-static const Magick::Image kEmptyImg("32x32", "black");
 
 static void LoadScenario(std::vector<FileInfo*>& file_imgs,
                          const std::vector<int>& sequence_ids);
@@ -259,7 +259,7 @@ static void LoadImageSequence(int sequence_id,
   } else if (frames.size() == 1) {
     output->push_back(std::move(frames[0]));
   } else {
-    output->push_back(kEmptyImg);
+    output->push_back(*empty_image);
   }
 }
 
@@ -292,7 +292,8 @@ static std::vector<Magick::Image> BuildRenderSequence(
     std::vector<Magick::Image> stackR;
     for (int j = 0; j < 10; ++j) {
       const Magick::Image& image =
-          (i < image_sequences[j].size() ? image_sequences[j][i] : kEmptyImg);
+          (i < image_sequences[j].size() ? image_sequences[j][i]
+                                         : *empty_image);
       // bool is_black = IsImageBlack(image);
       if (j >= 5) {
         // file_info->UnicolLightR[stackR.size()] = !is_black;
@@ -388,6 +389,7 @@ static void SetupUnicornPins() {
 //
 int main(int argc, char* argv[]) {
   Magick::InitializeMagick(*argv);
+  empty_image = new Magick::Image("32x32", "black");
 
   rgb_matrix::RGBMatrix::Options matrix_options;
   matrix_options.rows = 32;
