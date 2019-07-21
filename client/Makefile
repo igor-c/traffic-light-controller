@@ -20,13 +20,16 @@ all : $(BINARIES)
 $(RGB_LIBRARY): FORCE
 	$(MAKE) -C $(RGB_LIBDIR)
 
-client: client.o $(RGB_LIBRARY)
-	$(CXX) $(CXXFLAGS) client.o -o $@ $(LDFLAGS) $(MAGICK_LDFLAGS) -lwiringPi
+client: client.o network.o $(RGB_LIBRARY)
+	$(CXX) $(CXXFLAGS) client.o network.o -o $@ $(LDFLAGS) $(MAGICK_LDFLAGS) -lwiringPi
 
 %.o : %.cc
 	$(CXX) -I$(RGB_INCDIR) $(CXXFLAGS) -c -o $@ $<
 
-client.o : client.cc
+client.o : client.cc network.h
+	$(CXX) -I$(RGB_INCDIR) $(CXXFLAGS) $(MAGICK_CXXFLAGS) -c -o $@ $<
+
+network.o : network.cc network.h
 	$(CXX) -I$(RGB_INCDIR) $(CXXFLAGS) $(MAGICK_CXXFLAGS) -c -o $@ $<
 
 clean:

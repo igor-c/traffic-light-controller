@@ -8,17 +8,10 @@
 #include <string>
 #include <vector>
 
-#include <arpa/inet.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <netdb.h>
-#include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
 #include <sys/time.h>
-#include <sys/types.h>
 #include <unistd.h>
 
 #include <Magick++.h>
@@ -27,11 +20,8 @@
 
 #include "content-streamer.h"
 #include "led-matrix.h"
+#include "network.h"
 #include "pixel-mapper.h"
-
-#define IPaddr "192.168.88.100"
-#define PORT "1235"       // the port client will be connecting to
-#define MAXDATASIZE 1024  // max number of bytes we can get at once
 
 constexpr bool kDoCenter = false;
 
@@ -76,9 +66,8 @@ static rgb_matrix::FrameCanvas* offscreen_canvas;
 static rgb_matrix::RGBMatrix* matrix;
 static bool breakAnimationLoop = false;
 static int currentScenarioNum = 0;
-static int socket_fd = -1;
 static bool interrupt_received = false;
-static int clientName = static_cast<int>(UserTCPprotocol::ClientName::TL12);
+static uint8_t clientName = static_cast<uint8_t>(UserTCPprotocol::ClientName::TL12);
 
 void LoadScenario(std::vector<FileInfo*>& file_imgs, std::vector<int>& fName);
 
@@ -99,13 +88,6 @@ static void SleepMillis(tmillis_t milli_seconds) {
   nanosleep(&ts, NULL);
 }
 
-void* get_in_addr(struct sockaddr* sa) {
-  if (sa->sa_family == AF_INET) {
-    return &(((struct sockaddr_in*)sa)->sin_addr);
-  }
-  return &(((struct sockaddr_in6*)sa)->sin6_addr);
-}
-
 void quit(int val) {
   while (1) {
     std::cout << "Press 'q' or 'Q'  and ENTER to quit\n";
@@ -121,48 +103,15 @@ void quit(int val) {
   }
 }
 
-static void DisconnectFromServer() {
-  if (socket_fd != -1) {
-    close(socket_fd);
-    socket_fd = -1;
-  }
-}
-
-static void TrySendToServer(const uint8_t* new_data, size_t new_data_len) {
-  static std::vector<std::vector<uint8_t>> buffered;
-
-  if (new_data_len)
-    buffered.emplace_back(new_data, new_data + new_data_len);
-
-  while (!buffered.empty()) {
-    std::vector<uint8_t>& buffer = buffered.front();
-    ssize_t bytes_sent = send(socket_fd, buffer.data(), buffer.size(), 0);
-
-    if (bytes_sent == -1) {
-      if (errno == EINTR)
-        continue;
-      if (errno == EAGAIN || errno == EWOULDBLOCK)
-        return;
-      perror("send() failed");
-      DisconnectFromServer();
-      return;
-    }
-
-    buffer.erase(buffer.begin(), buffer.begin() + bytes_sent);
-    if (buffer.empty())
-      buffered.erase(buffered.begin());
-  }
-}
-
 void DoCmd(uint8_t data[]) {
   if (data[0] == static_cast<int>(UserTCPprotocol::Type::COMMUNICATION)) {
     if (data[1] == static_cast<int>(UserTCPprotocol::Communication::WHO)) {
       uint8_t ar[] = {0, 2, 0, clientName};
-      TrySendToServer(ar, sizeof(ar));
+      SendToServer(ar, sizeof(ar));
     } else if (data[1] ==
                static_cast<int>(UserTCPprotocol::Communication::ACK)) {
       // std::array<uint8_t, 4> ar = {0, 2, 1, 1};
-      // TrySendToServer(ar);
+      // SendToServer(ar);
     }
     return;
   }
@@ -236,57 +185,6 @@ void DoCmd(uint8_t data[]) {
         currentScenarioNum = data[3];
       }
     }
-  }
-}
-
-std::vector<uint8_t> ReadSocketCommand() {
-  static uint8_t tmp[1024];
-  static std::vector<uint8_t> cached;
-
-  std::vector<uint8_t> result;
-  if (socket_fd == -1)
-    return std::vector<uint8_t>();
-
-  while (true) {
-    // Try to send the data when we can, as we have no proper AsyncIO handling.
-    TrySendToServer(nullptr, 0);
-    if (socket_fd == -1)
-      return std::vector<uint8_t>();
-
-    ssize_t num_bytes = recv(socket_fd, tmp, sizeof(tmp), 0);
-    if (num_bytes == -1) {
-      if (errno == EINTR)
-        continue;
-      if (errno == EAGAIN || errno == EWOULDBLOCK)
-        break;
-      perror("recv() failed");
-      DisconnectFromServer();
-      break;
-    }
-
-    size_t old_cached_size = cached.size();
-    cached.resize(old_cached_size + num_bytes);
-    std::memcpy(cached.data() + old_cached_size, tmp, num_bytes);
-  }
-
-  while (true) {
-    if (cached.size() < 2)
-      return std::vector<uint8_t>();
-
-    uint16_t packet_size = (uint16_t) (cached[0] << 8) | cached[1];
-    if (packet_size == 0) {
-      // Continue here to make sure empty packet always means no more data.
-      cached.erase(cached.begin(), cached.begin() + 2);
-      continue;
-    }
-
-    if (cached.size() < (2 + packet_size))
-      return std::vector<uint8_t>();
-
-    result.resize(packet_size);
-    std::memcpy(result.data(), cached.data() + 2, packet_size);
-    cached.erase(cached.begin(), cached.begin() + 2 + packet_size);
-    return result;
   }
 }
 
@@ -495,6 +393,8 @@ void LoadScenario(std::vector<FileInfo*>& file_imgs, std::vector<int>& fName) {
 }
 
 static void SetupUnicornPins() {
+  return;
+
   wiringPiSetup();
 
   pinMode(UniconLight0, OUTPUT);
@@ -504,58 +404,6 @@ static void SetupUnicornPins() {
   digitalWrite(UniconLight0, CM_OFF);
   digitalWrite(UniconLight1, CM_OFF);
   digitalWrite(UniconLight2, CM_OFF);
-}
-
-static void ReconnectToServer() {
-  DisconnectFromServer();
-
-  struct addrinfo hints;
-  memset(&hints, 0, sizeof hints);
-  hints.ai_family = AF_UNSPEC;
-  hints.ai_socktype = SOCK_STREAM;
-
-  struct addrinfo* servinfo;
-  int rv = getaddrinfo(IPaddr, PORT, &hints, &servinfo);
-  if (rv != 0) {
-    fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
-    return;
-  }
-
-  struct addrinfo* p;
-  for (p = servinfo; p != NULL; p = p->ai_next) {
-    char s[INET6_ADDRSTRLEN];
-    inet_ntop(p->ai_family, get_in_addr((struct sockaddr*)p->ai_addr), s,
-              sizeof(s));
-    printf("Connecting to %s\n", s);
-
-    socket_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
-    if (socket_fd == -1) {
-      perror("socket() failed");
-      continue;
-    }
-
-    if (connect(socket_fd, p->ai_addr, p->ai_addrlen) == -1) {
-      perror("connect() failed");
-      DisconnectFromServer();
-      continue;
-    }
-
-    if (fcntl(socket_fd, F_SETFL, fcntl(socket_fd, F_GETFL) | O_NONBLOCK) < 0) {
-      perror("fcntl(O_NONBLOCK) failed");
-      DisconnectFromServer();
-      continue;
-    }
-
-    break;
-  }
-
-  if (p) {
-    fprintf(stderr, "Connected to server\n");
-  } else {
-    fprintf(stderr, "Failed to connect to server\n");
-  }
-
-  freeaddrinfo(servinfo);
 }
 
 //
@@ -586,13 +434,13 @@ int main(int argc, char* argv[]) {
         int indName = atoi(optarg);
         printf("indName convert atoi: %i\n", indName);
         if (indName == 1)
-          clientName = static_cast<int>(UserTCPprotocol::ClientName::TL12);
+          clientName = static_cast<uint8_t>(UserTCPprotocol::ClientName::TL12);
         else if (indName == 2)
-          clientName = static_cast<int>(UserTCPprotocol::ClientName::TL34);
+          clientName = static_cast<uint8_t>(UserTCPprotocol::ClientName::TL34);
         else if (indName == 3)
-          clientName = static_cast<int>(UserTCPprotocol::ClientName::TL56);
+          clientName = static_cast<uint8_t>(UserTCPprotocol::ClientName::TL56);
         else if (indName == 4)
-          clientName = static_cast<int>(UserTCPprotocol::ClientName::TL78);
+          clientName = static_cast<uint8_t>(UserTCPprotocol::ClientName::TL78);
         break;
       }
       case 's': {
@@ -611,6 +459,8 @@ int main(int argc, char* argv[]) {
       }
     }
   }
+
+  SetServerAddress("192.168.88.100", 1235);
 
   SetupUnicornPins();
 
