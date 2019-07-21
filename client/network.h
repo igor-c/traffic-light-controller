@@ -8,7 +8,7 @@
 
 void SetServerAddress(std::string host, int port);
 void DisconnectFromServer();
-void ReconnectToServer();
+void ConnectToServerIfNecessary();
 
 void SendToServer(const uint8_t* new_data, size_t new_data_len);
 std::vector<uint8_t> ReadSocketCommand();

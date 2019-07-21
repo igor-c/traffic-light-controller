@@ -58,13 +58,13 @@ class UserTCPprotocol {
 #define CM_ON 1
 #define CM_OFF 0
 
-static int TLstate = 0;
+static bool is_traffic_light_started = false;
 static std::vector<FileInfo*> file_imgs;
 static int vsync_multiple = 1;
 static int wait_ms = 125;
 static rgb_matrix::FrameCanvas* offscreen_canvas;
 static rgb_matrix::RGBMatrix* matrix;
-static bool breakAnimationLoop = false;
+static bool need_animation_update = false;
 static int currentScenarioNum = 0;
 static bool interrupt_received = false;
 static uint8_t clientName = static_cast<uint8_t>(UserTCPprotocol::ClientName::TL12);
@@ -103,27 +103,27 @@ void quit(int val) {
   }
 }
 
-void DoCmd(uint8_t data[]) {
+void DoCmd(uint8_t* data) {
   if (data[0] == static_cast<int>(UserTCPprotocol::Type::COMMUNICATION)) {
     if (data[1] == static_cast<int>(UserTCPprotocol::Communication::WHO)) {
       uint8_t ar[] = {0, 2, 0, clientName};
       SendToServer(ar, sizeof(ar));
     } else if (data[1] ==
                static_cast<int>(UserTCPprotocol::Communication::ACK)) {
-      // std::array<uint8_t, 4> ar = {0, 2, 1, 1};
-      // SendToServer(ar);
+      // uint8_t ar[] = {0, 2, 1, 1};
+      // SendToServer(ar, sizeof(ar));
     }
     return;
   }
 
   if (data[0] == static_cast<int>(UserTCPprotocol::Type::STATE)) {
-    printf("UserTCPprotocol STATE ");
+    printf("UserTCPprotocol STATE");
     if (data[1] == static_cast<int>(UserTCPprotocol::State::STOP)) {
       printf("OFF\n");
-      TLstate = 0;
+      is_traffic_light_started = false;
     } else if (data[1] == static_cast<int>(UserTCPprotocol::State::START)) {
       printf("ON\n");
-      TLstate = 1;
+      is_traffic_light_started = true;
     }
     return;
   }
@@ -171,17 +171,17 @@ void DoCmd(uint8_t data[]) {
     // ALLCOMBINATIONS(0), NEXTCOMBO (1)
     if (data[2] ==
         static_cast<int>(UserTCPprotocol::Scenario::ALLCOMBINATIONS)) {
-      printf("UserTCPprotocol NEWCOMBINATIONS \n");
+      printf("UserTCPprotocol NEWCOMBINATIONS\n");
       std::vector<int> filename;
-      for (int i = 0; i < 10; i++) {
+      for (int i = 0; i < 10; ++i) {
         filename.push_back(data[4 + i]);
       }
-      breakAnimationLoop = true;
+      need_animation_update = true;
       LoadScenario(file_imgs, filename);
     } else if (data[2] ==
                static_cast<int>(UserTCPprotocol::Scenario::NEXTCOMBO)) {
       if (data[3] < file_imgs.size()) {
-        breakAnimationLoop = true;
+        need_animation_update = true;
         currentScenarioNum = data[3];
       }
     }
@@ -228,14 +228,14 @@ void DisplayAnimation(const FileInfo* file,
                       rgb_matrix::FrameCanvas* offscreen_canvas,
                       int vsync_multiple) {
   rgb_matrix::StreamReader reader(file->content_stream);
-  while (!interrupt_received && !breakAnimationLoop) {
+  while (!interrupt_received && !need_animation_update) {
     ReadSocketAndExecuteCommand();
-    if (TLstate == 1) {
+    if (is_traffic_light_started) {
       uint32_t delay_us = 0;
       int seqInd = 0;
       while (!interrupt_received &&
              reader.GetNext(offscreen_canvas, &delay_us) &&
-             !breakAnimationLoop) {
+             !need_animation_update) {
         // printf("unicol Light: UP:%i, MID:%i, BOT:%i\n",
         // file->UnicolLight[0].at(seqInd), file->UnicolLight[1].at(seqInd),
         // file->UnicolLight[2].at(seqInd));
@@ -252,7 +252,7 @@ void DisplayAnimation(const FileInfo* file,
         ReadSocketAndExecuteCommand();
       }
       reader.Rewind();
-    } else if (TLstate == 0) {
+    } else {
       file_imgs.clear();
       matrix->Clear();
     }
@@ -464,8 +464,6 @@ int main(int argc, char* argv[]) {
 
   SetupUnicornPins();
 
-  ReconnectToServer();
-
   //
   //------------------------ANIMATION----------------------------------------
   //
@@ -525,8 +523,8 @@ int main(int argc, char* argv[]) {
   do {
     // SleepMillis(200);
     ReadSocketAndExecuteCommand();
-    if (TLstate) {
-      breakAnimationLoop = false;
+    if (is_traffic_light_started) {
+      need_animation_update = false;
       DisplayAnimation(file_imgs[currentScenarioNum], matrix, offscreen_canvas,
                        vsync_multiple);
     }
@@ -535,6 +533,7 @@ int main(int argc, char* argv[]) {
   if (interrupt_received) {
     fprintf(stderr, "Caught signal. Exiting.\n");
   }
+
   try {
     DisconnectFromServer();
     matrix->Clear();
