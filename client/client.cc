@@ -30,7 +30,7 @@ constexpr bool kDoCenter = false;
 constexpr uint32_t kHoldTimeMs = 125;
 constexpr int kVsyncMultiple = 1;
 
-struct FileInfo {
+struct Scenario {
   rgb_matrix::MemStreamIO content_stream;
   std::vector<bool> UnicolLightL[5];
   std::vector<bool> UnicolLightR[5];
@@ -63,7 +63,7 @@ class UserTCPprotocol {
 
 static bool is_traffic_light_started = false;
 static const Magick::Image* empty_image;
-static std::vector<FileInfo*> file_imgs;
+static std::vector<Scenario> scenarios;
 static rgb_matrix::RGBMatrix* matrix;
 static bool should_interrupt_animation_loop = false;
 static int currentScenarioNum = 0;
@@ -71,8 +71,7 @@ static bool has_received_signal = false;
 static uint8_t clientName =
     static_cast<uint8_t>(UserTCPprotocol::ClientName::TL12);
 
-static void LoadScenario(std::vector<FileInfo*>& file_imgs,
-                         const std::vector<int>& sequence_ids);
+static void LoadScenario(const std::vector<int>& sequence_ids);
 
 //------------------------SERVER-------------------------------------------
 
@@ -180,10 +179,10 @@ void DoCmd(uint8_t* data) {
         sequence_ids.push_back(data[4 + i]);
       }
       should_interrupt_animation_loop = true;
-      LoadScenario(file_imgs, sequence_ids);
+      LoadScenario(sequence_ids);
     } else if (data[2] ==
                static_cast<int>(UserTCPprotocol::Scenario::NEXTCOMBO)) {
-      if (data[3] < file_imgs.size()) {
+      if (data[3] < scenarios.size()) {
         should_interrupt_animation_loop = true;
         currentScenarioNum = data[3];
       }
@@ -211,28 +210,27 @@ void DisplayAnimation() {
   if (!offscreen_canvas)
     offscreen_canvas = matrix->CreateFrameCanvas();
 
-  FileInfo* file = file_imgs[currentScenarioNum];
-  rgb_matrix::StreamReader reader(&file->content_stream);
+  Scenario& scenario = scenarios[currentScenarioNum];
+  rgb_matrix::StreamReader reader(&scenario.content_stream);
 
   should_interrupt_animation_loop = false;
   while (!should_interrupt_animation_loop) {
     ReadSocketAndExecuteCommands();
     if (!is_traffic_light_started) {
-      file_imgs.clear();
+      scenarios.clear();
       matrix->Clear();
       continue;
     }
 
-    // TODO(igorc): Do not start new rendering loop too early.
     reader.Rewind();
     uint32_t hold_time_us = 0;
     while (!should_interrupt_animation_loop &&
            reader.GetNext(offscreen_canvas, &hold_time_us)) {
       uint64_t deadline_time = GetTimeInMillis() + hold_time_us / 1000;
 
-      // digitalWrite(UniconLight0, file->UnicolLightL[0].at(seqInd));
-      // digitalWrite(UniconLight1, file->UnicolLightL[1].at(seqInd));
-      // digitalWrite(UniconLight2, file->UnicolLightL[2].at(seqInd));
+      // digitalWrite(UniconLight0, scenario->UnicolLightL[0].at(seqInd));
+      // digitalWrite(UniconLight1, scenario->UnicolLightL[1].at(seqInd));
+      // digitalWrite(UniconLight2, scenario->UnicolLightL[2].at(seqInd));
 
       offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, kVsyncMultiple);
 
@@ -299,10 +297,10 @@ static std::vector<Magick::Image> BuildRenderSequence(
                                          : *empty_image);
       // bool is_black = IsImageBlack(image);
       if (j >= 5) {
-        // file_info->UnicolLightR[stackR.size()] = !is_black;
+        // scenario->UnicolLightR[stackR.size()] = !is_black;
         stackR.push_back(image);
       } else {
-        // file_info->UnicolLightL[stackL.size()] = !is_black;
+        // scenario->UnicolLightL[stackL.size()] = !is_black;
         stackL.push_back(image);
       }
     }
@@ -349,8 +347,7 @@ static void AddToMatrixStream(const Magick::Image& img,
   output->Stream(*canvas, hold_time_us);
 }
 
-static void LoadScenario(std::vector<FileInfo*>& file_imgs,
-                         const std::vector<int>& sequence_ids) {
+static void LoadScenario(const std::vector<int>& sequence_ids) {
   std::vector<std::vector<Magick::Image>> image_sequences;
   for (int i = 0; i < 10; ++i) {
     int sequence_id = sequence_ids[i];
@@ -363,16 +360,15 @@ static void LoadScenario(std::vector<FileInfo*>& file_imgs,
       BuildRenderSequence(image_sequences);
 
   // Convert render sequence to RGB Matrix stream.
-  FileInfo* file_info = new FileInfo();
-  rgb_matrix::StreamWriter out(&file_info->content_stream);
+  scenarios.emplace_back();
+  rgb_matrix::StreamWriter out(&scenarios.back().content_stream);
   for (size_t i = 0; i < render_sequence.size(); ++i) {
     const Magick::Image& img = render_sequence[i];
     uint32_t hold_time_us = kHoldTimeMs * 1000;
     AddToMatrixStream(img, hold_time_us, &out);
   }
 
-  file_imgs.push_back(file_info);
-  printf("file_imgs size: %i\n", file_imgs.size());
+  printf("Scenarios list size: %i\n", scenarios.size());
 }
 
 static void SetupUnicornPins() {
