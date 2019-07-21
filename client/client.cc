@@ -6,6 +6,7 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -26,11 +27,12 @@
 #include "pixel-mapper.h"
 
 constexpr bool kDoCenter = false;
+constexpr uint32_t kHoldTimeMs = 125;
 
 using tmillis_t = int64_t;
 
 struct FileInfo {
-  rgb_matrix::StreamIO* content_stream;
+  rgb_matrix::MemStreamIO content_stream;
   std::vector<bool> UnicolLightL[5];
   std::vector<bool> UnicolLightR[5];
 };
@@ -63,9 +65,9 @@ class UserTCPprotocol {
 static bool is_traffic_light_started = false;
 static std::vector<FileInfo*> file_imgs;
 static int vsync_multiple = 1;
-static int wait_ms = 125;
-static rgb_matrix::FrameCanvas* offscreen_canvas;
 static rgb_matrix::RGBMatrix* matrix;
+static rgb_matrix::FrameCanvas* sequence_loader_canvas = nullptr;
+static rgb_matrix::FrameCanvas* offscreen_canvas;
 static bool need_animation_update = false;
 static int currentScenarioNum = 0;
 static bool interrupt_received = false;
@@ -74,7 +76,7 @@ static uint8_t clientName =
 static const Magick::Image kEmptyImg("32x32", "black");
 
 static void LoadScenario(std::vector<FileInfo*>& file_imgs,
-                         const std::vector<int>& img_names);
+                         const std::vector<int>& sequence_ids);
 
 //------------------------SERVER-------------------------------------------
 
@@ -177,12 +179,12 @@ void DoCmd(uint8_t* data) {
     if (data[2] ==
         static_cast<int>(UserTCPprotocol::Scenario::ALLCOMBINATIONS)) {
       printf("UserTCPprotocol NEWCOMBINATIONS\n");
-      std::vector<int> filename;
+      std::vector<int> sequence_ids;
       for (int i = 0; i < 10; ++i) {
-        filename.push_back(data[4 + i]);
+        sequence_ids.push_back(data[4 + i]);
       }
       need_animation_update = true;
-      LoadScenario(file_imgs, filename);
+      LoadScenario(file_imgs, sequence_ids);
     } else if (data[2] ==
                static_cast<int>(UserTCPprotocol::Scenario::NEXTCOMBO)) {
       if (data[3] < file_imgs.size()) {
@@ -207,32 +209,11 @@ static void InterruptHandler(int signo) {
   interrupt_received = true;
 }
 
-static void StoreInStream(const Magick::Image& img,
-                          int delay_time_us,
-                          rgb_matrix::FrameCanvas* scratch,
-                          rgb_matrix::StreamWriter* output) {
-  scratch->Clear();
-  const int x_offset = kDoCenter ? (scratch->width() - img.columns()) / 2 : 0;
-  const int y_offset = kDoCenter ? (scratch->height() - img.rows()) / 2 : 0;
-  for (size_t y = 0; y < img.rows(); ++y) {
-    for (size_t x = 0; x < img.columns(); ++x) {
-      const Magick::Color& c = img.pixelColor(x, y);
-      if (c.alphaQuantum() < 256) {
-        scratch->SetPixel(x + x_offset, y + y_offset,
-                          ScaleQuantumToChar(c.redQuantum()),
-                          ScaleQuantumToChar(c.greenQuantum()),
-                          ScaleQuantumToChar(c.blueQuantum()));
-      }
-    }
-  }
-  output->Stream(*scratch, delay_time_us);
-}
-
-void DisplayAnimation(const FileInfo* file,
+void DisplayAnimation(FileInfo* file,
                       rgb_matrix::RGBMatrix* matrix,
                       rgb_matrix::FrameCanvas* offscreen_canvas,
                       int vsync_multiple) {
-  rgb_matrix::StreamReader reader(file->content_stream);
+  rgb_matrix::StreamReader reader(&file->content_stream);
   while (!interrupt_received && !need_animation_update) {
     ReadSocketAndExecuteCommand();
     if (is_traffic_light_started) {
@@ -337,11 +318,36 @@ static std::vector<Magick::Image> BuildRenderSequence(
   return std::move(result);
 }
 
+// |hold_time_us| indicates for how long this frame is to be shown
+// in microseconds.
+static void AddToMatrixStream(const Magick::Image& img,
+                              uint32_t hold_time_us,
+                              rgb_matrix::StreamWriter* output) {
+  sequence_loader_canvas->Clear();
+  const int x_offset =
+      kDoCenter ? (sequence_loader_canvas->width() - img.columns()) / 2 : 0;
+  const int y_offset =
+      kDoCenter ? (sequence_loader_canvas->height() - img.rows()) / 2 : 0;
+  for (size_t y = 0; y < img.rows(); ++y) {
+    for (size_t x = 0; x < img.columns(); ++x) {
+      const Magick::Color& c = img.pixelColor(x, y);
+      if (c.alphaQuantum() < 256) {
+        sequence_loader_canvas->SetPixel(x + x_offset, y + y_offset,
+                                         ScaleQuantumToChar(c.redQuantum()),
+                                         ScaleQuantumToChar(c.greenQuantum()),
+                                         ScaleQuantumToChar(c.blueQuantum()));
+      }
+    }
+  }
+
+  output->Stream(*sequence_loader_canvas, hold_time_us);
+}
+
 static void LoadScenario(std::vector<FileInfo*>& file_imgs,
-                         const std::vector<int>& img_names) {
+                         const std::vector<int>& sequence_ids) {
   std::vector<std::vector<Magick::Image>> image_sequences;
   for (int i = 0; i < 10; ++i) {
-    int sequence_id = img_names[i];
+    int sequence_id = sequence_ids[i];
     printf("LoadScenario #%d: image %d\n", i, sequence_id);
     image_sequences.emplace_back();
     LoadImageSequence(sequence_id, &image_sequences[i]);
@@ -350,21 +356,16 @@ static void LoadScenario(std::vector<FileInfo*>& file_imgs,
   std::vector<Magick::Image> render_sequence =
       BuildRenderSequence(image_sequences);
 
-  matrix->Clear();
-  offscreen_canvas = matrix->CreateFrameCanvas();
-
+  // Convert render sequence to RGB Matrix stream.
   FileInfo* file_info = new FileInfo();
-  file_info->content_stream = new rgb_matrix::MemStreamIO();
-  rgb_matrix::StreamWriter out(file_info->content_stream);
+  rgb_matrix::StreamWriter out(&file_info->content_stream);
   for (size_t i = 0; i < render_sequence.size(); ++i) {
     const Magick::Image& img = render_sequence[i];
-    int64_t delay_time_us = wait_ms * 1000;
-    StoreInStream(img, delay_time_us, offscreen_canvas, &out);
+    uint32_t hold_time_us = kHoldTimeMs * 1000;
+    AddToMatrixStream(img, hold_time_us, &out);
   }
 
-  if (file_info) {
-    file_imgs.push_back(file_info);
-  }
+  file_imgs.push_back(file_info);
   printf("file_imgs size: %i\n", file_imgs.size());
 }
 
@@ -489,6 +490,7 @@ int main(int argc, char* argv[]) {
   if (matrix == NULL) {
     return 1;
   }
+  sequence_loader_canvas = matrix->CreateFrameCanvas();
 
   signal(SIGTERM, InterruptHandler);
   signal(SIGINT, InterruptHandler);
