@@ -16,9 +16,10 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define CALL_RETRY(retvar, expression) do {  \
-    retvar = (expression);                   \
-} while (retvar == -1 && errno == EINTR);
+#define CALL_RETRY(retvar, expression) \
+  do {                                 \
+    retvar = (expression);             \
+  } while (retvar == -1 && errno == EINTR);
 
 constexpr int64_t kMaxReconnectDelayMs = 1000;
 constexpr int64_t kConnectTimeoutMs = 10000;
@@ -31,6 +32,7 @@ static struct addrinfo* addrinfo_main = nullptr;
 static struct addrinfo* addrinfo_cur = nullptr;
 static int64_t last_connect_attempt_time = -1;
 static std::vector<std::vector<uint8_t>> send_buffer;
+static std::vector<uint8_t> receive_buffer;
 
 static int64_t GetTimeMillis() {
   struct timeval tp;
@@ -59,6 +61,7 @@ void DisconnectFromServer() {
 
   is_connected = false;
   send_buffer.clear();
+  receive_buffer.clear();
 }
 
 void SetServerAddress(std::string host, int port) {
@@ -106,7 +109,6 @@ void SendToServer(const uint8_t* new_data, size_t new_data_len) {
 
 std::vector<uint8_t> ReadSocketCommand() {
   static uint8_t tmp[1024];
-  static std::vector<uint8_t> cached;
 
   ConnectToServerIfNecessary();
 
@@ -131,36 +133,38 @@ std::vector<uint8_t> ReadSocketCommand() {
       break;
     }
 
-    size_t old_cached_size = cached.size();
-    cached.resize(old_cached_size + num_bytes);
-    std::memcpy(cached.data() + old_cached_size, tmp, num_bytes);
+    size_t old_buffer_size = receive_buffer.size();
+    receive_buffer.resize(old_buffer_size + num_bytes);
+    std::memcpy(receive_buffer.data() + old_buffer_size, tmp, num_bytes);
   }
 
   while (true) {
-    if (cached.size() < 2)
+    if (receive_buffer.size() < 2)
       return std::vector<uint8_t>();
 
-    uint16_t data_size = (uint16_t) (cached[0] << 8) | cached[1];
+    uint16_t data_size = (uint16_t)(receive_buffer[0] << 8) | receive_buffer[1];
     if (data_size == 0) {
       // Continue here, to make sure empty packet always means no more data.
-      cached.erase(cached.begin(), cached.begin() + 2);
+      receive_buffer.erase(receive_buffer.begin(), receive_buffer.begin() + 2);
       continue;
     }
 
     size_t total_size = data_size + 2;
-    if (cached.size() < total_size)
+    if (receive_buffer.size() < total_size)
       return std::vector<uint8_t>();
 
     result.resize(data_size);
-    std::memcpy(result.data(), cached.data() + 2, data_size);
-    cached.erase(cached.begin(), cached.begin() + total_size);
+    std::memcpy(result.data(), receive_buffer.data() + 2, data_size);
+    receive_buffer.erase(receive_buffer.begin(),
+                         receive_buffer.begin() + total_size);
     return result;
   }
 }
 
 static void FinishConnecting() {
   int rv;
-  CALL_RETRY(rv, connect(socket_fd, addrinfo_cur->ai_addr, addrinfo_cur->ai_addrlen));
+  CALL_RETRY(
+      rv, connect(socket_fd, addrinfo_cur->ai_addr, addrinfo_cur->ai_addrlen));
 
   if (rv == -1) {
     if (errno == EALREADY)
@@ -227,8 +231,7 @@ void ConnectToServerIfNecessary() {
        addrinfo_cur = addrinfo_cur->ai_next) {
     char s[INET6_ADDRSTRLEN];
     inet_ntop(addrinfo_cur->ai_family,
-              get_in_addr((struct sockaddr*)addrinfo_cur->ai_addr),
-              s,
+              get_in_addr((struct sockaddr*)addrinfo_cur->ai_addr), s,
               sizeof(s));
 
     printf("Connecting to %s\n", s);

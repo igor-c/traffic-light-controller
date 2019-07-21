@@ -67,7 +67,8 @@ static rgb_matrix::RGBMatrix* matrix;
 static bool need_animation_update = false;
 static int currentScenarioNum = 0;
 static bool interrupt_received = false;
-static uint8_t clientName = static_cast<uint8_t>(UserTCPprotocol::ClientName::TL12);
+static uint8_t clientName =
+    static_cast<uint8_t>(UserTCPprotocol::ClientName::TL12);
 
 void LoadScenario(std::vector<FileInfo*>& file_imgs, std::vector<int>& fName);
 
@@ -277,7 +278,8 @@ void LoadScenario(std::vector<FileInfo*>& file_imgs, std::vector<int>& fName) {
     // int leading = 4; //6 at max
     // //printf(std::to_string(imgarg*0.000001).substr(8-leading));
     // std::array<std::string, 18> ar = {"LoadScenario:
-    // "+std::to_string(imgarg*0.000001).substr(8-leading)}; TrySendToServer(sockfd,
+    // "+std::to_string(imgarg*0.000001).substr(8-leading)};
+    // TrySendToServer(sockfd,
     // ar);
 
     std::string s;
