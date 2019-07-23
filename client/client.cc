@@ -62,7 +62,7 @@ class UserTCPprotocol {
 #define CM_OFF 0
 
 // Scenario-related controls:
-static std::vector<Scenario> all_scenarios;
+static std::vector<Scenario*> all_scenarios;
 static int current_scenario_idx = -1;
 static bool is_traffic_light_started = false;
 
@@ -222,8 +222,8 @@ static void TryRunAnimationLoop() {
     uint32_t hold_time_us = 0;
     // Make a copy of scenario since a new one can be added,
     // relocating all the data in memory.
-    Scenario scenario = all_scenarios[current_scenario_idx];
-    rgb_matrix::StreamReader reader(&scenario.content_stream);
+    Scenario* scenario = all_scenarios[current_scenario_idx];
+    rgb_matrix::StreamReader reader(&scenario->content_stream);
     while (!should_interrupt_animation_loop &&
            reader.GetNext(offscreen_canvas, &hold_time_us)) {
       uint64_t deadline_time = GetTimeInMillis() + hold_time_us / 1000;
@@ -247,6 +247,9 @@ static void TryRunAnimationLoop() {
 
   if (!is_traffic_light_started) {
     current_scenario_idx = -1;
+    for (auto* scenario : all_scenarios) {
+      delete scenario;
+    }
     all_scenarios.clear();
     matrix->Clear();
   }
@@ -263,7 +266,11 @@ static void LoadImageSequence(int sequence_id,
   if (sequence_id) {
     char image_path[256];
     std::snprintf(image_path, sizeof(image_path), "gif/%d.gif", sequence_id);
-    Magick::readImages(&frames, image_path);
+    try {
+      Magick::readImages(&frames, image_path);
+    } catch (Magick::ErrorFileOpen& e) {
+      // Ignore.
+    }
     printf("readImages for '%s' returned %d images\n", image_path,
            frames.size());
   }
@@ -293,30 +300,50 @@ static void LoadImageSequence(int sequence_id,
 }*/
 
 static std::vector<Magick::Image> BuildRenderSequence(
-    const std::vector<std::vector<Magick::Image>>& image_sequences) {
+    const std::vector<int>& sequence_ids) {
+  std::vector<std::vector<Magick::Image>> image_sequences;
+  for (int i = 0; i < 10; ++i) {
+    int sequence_id = sequence_ids[i];
+    printf("Loading scenario #%d: image %d\n", i, sequence_id);
+    image_sequences.emplace_back();
+    LoadImageSequence(sequence_id, &image_sequences[i]);
+  }
+
   size_t max_sequence_length = 0;
   for (int i = 0; i < 10; ++i) {
     if (image_sequences[i].size() > max_sequence_length)
       max_sequence_length = image_sequences[i].size();
   }
 
+  fprintf(stderr, "Building rendering sequence, max_length=%d\n",
+          (int)max_sequence_length);
   std::vector<Magick::Image> result;
   for (size_t i = 0; i < max_sequence_length; ++i) {
     // Collect lists of images for left and right sides.
     std::vector<Magick::Image> stackL;
     std::vector<Magick::Image> stackR;
     for (int j = 0; j < 10; ++j) {
-      const Magick::Image& image =
-          (i < image_sequences[j].size() ? image_sequences[j][i]
-                                         : *empty_image);
-      // bool is_black = IsImageBlack(image);
+      Magick::Image* image;
       if (j >= 5) {
-        // scenario->UnicolLightR[stackR.size()] = !is_black;
-        stackR.push_back(image);
+        stackR.emplace_back();
+        image = &stackR.back();
       } else {
-        // scenario->UnicolLightL[stackL.size()] = !is_black;
-        stackL.push_back(image);
+        stackL.emplace_back();
+        image = &stackL.back();
       }
+
+      if (i < image_sequences[j].size()) {
+        *image = image_sequences[j][i];
+        // Decrease ref count in the original image, so it doesn't need
+        // to be cloned inside appendImages().
+        image_sequences[j][i] = *empty_image;
+      } else {
+        *image = *empty_image;
+      }
+
+      // bool is_black = IsImageBlack(image);
+      // scenario->UnicolLightR[stackR.size()] = !is_black;
+      // scenario->UnicolLightL[stackL.size()] = !is_black;
     }
 
     // Build full contiguous images for left and right.
@@ -325,10 +352,9 @@ static std::vector<Magick::Image> BuildRenderSequence(
     Magick::appendImages(&side_images[1], stackL.begin(), stackL.end());
 
     // Merge and left and right side into the single image for rendering.
-    Magick::Image full_image;
+    result.emplace_back();
+    Magick::Image& full_image = result.back();
     Magick::appendImages(&full_image, side_images, side_images + 2, true);
-
-    result.push_back(std::move(full_image));
   }
 
   return std::move(result);
@@ -362,27 +388,25 @@ static void AddToMatrixStream(const Magick::Image& img,
 }
 
 static void LoadScenario(const std::vector<int>& sequence_ids) {
-  std::vector<std::vector<Magick::Image>> image_sequences;
-  for (int i = 0; i < 10; ++i) {
-    int sequence_id = sequence_ids[i];
-    printf("LoadScenario #%d: image %d\n", i, sequence_id);
-    image_sequences.emplace_back();
-    LoadImageSequence(sequence_id, &image_sequences[i]);
-  }
-
+  fprintf(stderr, "LoadScenario 1\n");
   std::vector<Magick::Image> render_sequence =
-      BuildRenderSequence(image_sequences);
+      BuildRenderSequence(sequence_ids);
 
+  fprintf(stderr, "Loading rendering sequences, count=%d\n",
+          (int)render_sequence.size());
   // Convert render sequence to RGB Matrix stream.
-  all_scenarios.emplace_back();
-  rgb_matrix::StreamWriter out(&all_scenarios.back().content_stream);
+  all_scenarios.push_back(new Scenario());
+  rgb_matrix::StreamWriter out(&all_scenarios.back()->content_stream);
   for (size_t i = 0; i < render_sequence.size(); ++i) {
+    fprintf(stderr, "LoadScenario %d/%d\n", (int)i,
+            (int)render_sequence.size());
     const Magick::Image& img = render_sequence[i];
     uint32_t hold_time_us = kHoldTimeMs * 1000;
     AddToMatrixStream(img, hold_time_us, &out);
   }
 
-  printf("Scenarios list size: %i\n", all_scenarios.size());
+  printf("Finished loading scenario, scenario count = %d\n",
+         (int)all_scenarios.size());
 }
 
 static void SetupUnicornPins() {
@@ -508,9 +532,13 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  signal(SIGTERM, InterruptHandler);
-  signal(SIGINT, InterruptHandler);
+  // signal(SIGTERM, InterruptHandler);
+  // signal(SIGINT, InterruptHandler);
   signal(SIGTSTP, InterruptHandler);
+
+  static const int demo_scenarios[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+  LoadScenario(std::vector<int>(demo_scenarios, demo_scenarios + 10));
+  current_scenario_idx = 0;
 
   fprintf(stderr, "Entering processing loop\n");
 
