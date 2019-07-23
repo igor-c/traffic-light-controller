@@ -61,12 +61,14 @@ class UserTCPprotocol {
 #define CM_ON 1
 #define CM_OFF 0
 
+// Scenario-related controls:
+static std::vector<Scenario> all_scenarios;
+static int current_scenario_idx = -1;
 static bool is_traffic_light_started = false;
+
 static const Magick::Image* empty_image;
-static std::vector<Scenario> scenarios;
 static rgb_matrix::RGBMatrix* matrix;
 static bool should_interrupt_animation_loop = false;
-static int currentScenarioNum = 0;
 static bool has_received_signal = false;
 static uint8_t clientName =
     static_cast<uint8_t>(UserTCPprotocol::ClientName::TL12);
@@ -127,6 +129,7 @@ void DoCmd(uint8_t* data) {
       printf("ON\n");
       is_traffic_light_started = true;
     }
+    should_interrupt_animation_loop = true;
     return;
   }
 
@@ -182,9 +185,9 @@ void DoCmd(uint8_t* data) {
       LoadScenario(sequence_ids);
     } else if (data[2] ==
                static_cast<int>(UserTCPprotocol::Scenario::NEXTCOMBO)) {
-      if (data[3] < scenarios.size()) {
+      if (data[3] < all_scenarios.size()) {
         should_interrupt_animation_loop = true;
-        currentScenarioNum = data[3];
+        current_scenario_idx = data[3];
       }
     }
   }
@@ -205,25 +208,22 @@ static void InterruptHandler(int signo) {
   should_interrupt_animation_loop = true;
 }
 
-void DisplayAnimation() {
+static void TryRunAnimationLoop() {
   static rgb_matrix::FrameCanvas* offscreen_canvas = nullptr;
   if (!offscreen_canvas)
     offscreen_canvas = matrix->CreateFrameCanvas();
 
-  Scenario& scenario = scenarios[currentScenarioNum];
-  rgb_matrix::StreamReader reader(&scenario.content_stream);
-
   should_interrupt_animation_loop = false;
-  while (!should_interrupt_animation_loop) {
-    ReadSocketAndExecuteCommands();
-    if (!is_traffic_light_started) {
-      scenarios.clear();
-      matrix->Clear();
-      continue;
-    }
 
-    reader.Rewind();
+  ReadSocketAndExecuteCommands();
+
+  bool has_drawn = false;
+  while (!should_interrupt_animation_loop && current_scenario_idx >= 0) {
     uint32_t hold_time_us = 0;
+    // Make a copy of scenario since a new one can be added,
+    // relocating all the data in memory.
+    Scenario scenario = all_scenarios[current_scenario_idx];
+    rgb_matrix::StreamReader reader(&scenario.content_stream);
     while (!should_interrupt_animation_loop &&
            reader.GetNext(offscreen_canvas, &hold_time_us)) {
       uint64_t deadline_time = GetTimeInMillis() + hold_time_us / 1000;
@@ -236,10 +236,24 @@ void DisplayAnimation() {
 
       ReadSocketAndExecuteCommands();
 
+      has_drawn = true;
       uint64_t cur_time = GetTimeInMillis();
       if (cur_time < deadline_time)
         SleepMillis(deadline_time - cur_time);
     }
+
+    ReadSocketAndExecuteCommands();
+  }
+
+  if (!is_traffic_light_started) {
+    current_scenario_idx = -1;
+    all_scenarios.clear();
+    matrix->Clear();
+  }
+
+  if (!has_drawn) {
+    // Force the caller to offload CPU since TCP read is non-blocking.
+    SleepMillis(100);
   }
 }
 
@@ -360,15 +374,15 @@ static void LoadScenario(const std::vector<int>& sequence_ids) {
       BuildRenderSequence(image_sequences);
 
   // Convert render sequence to RGB Matrix stream.
-  scenarios.emplace_back();
-  rgb_matrix::StreamWriter out(&scenarios.back().content_stream);
+  all_scenarios.emplace_back();
+  rgb_matrix::StreamWriter out(&all_scenarios.back().content_stream);
   for (size_t i = 0; i < render_sequence.size(); ++i) {
     const Magick::Image& img = render_sequence[i];
     uint32_t hold_time_us = kHoldTimeMs * 1000;
     AddToMatrixStream(img, hold_time_us, &out);
   }
 
-  printf("Scenarios list size: %i\n", scenarios.size());
+  printf("Scenarios list size: %i\n", all_scenarios.size());
 }
 
 static void SetupUnicornPins() {
@@ -501,13 +515,7 @@ int main(int argc, char* argv[]) {
   fprintf(stderr, "Entering processing loop\n");
 
   do {
-    ReadSocketAndExecuteCommands();
-    if (is_traffic_light_started) {
-      DisplayAnimation();
-    } else {
-      // Offload CPU and TCP read is non-blocking.
-      SleepMillis(100);
-    }
+    TryRunAnimationLoop();
   } while (!has_received_signal);
 
   if (has_received_signal) {
