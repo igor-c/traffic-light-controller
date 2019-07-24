@@ -277,6 +277,7 @@ static void LoadImageSequence(int sequence_id,
 
   output->clear();
   if (frames.size() > 1) {
+    // Unpack an animated GIF into a series of same-size frames.
     Magick::coalesceImages(output, frames.begin(), frames.end());
   } else if (frames.size() == 1) {
     output->push_back(std::move(frames[0]));
@@ -309,47 +310,49 @@ static std::vector<Magick::Image> BuildRenderSequence(
     LoadImageSequence(sequence_id, &image_sequences[i]);
   }
 
+  // Calculate the longest sequence length.
   size_t max_sequence_length = 0;
   for (int i = 0; i < 10; ++i) {
     if (image_sequences[i].size() > max_sequence_length)
       max_sequence_length = image_sequences[i].size();
   }
 
+  // Fill shorter sequences, so they all become the same size.
+  for (int i = 0; i < 10; ++i) {
+    size_t missing_count = max_sequence_length - image_sequences[i].size();
+    for (size_t j = 0; j < missing_count; ++j) {
+      image_sequences[i].push_back(*empty_image);
+    }
+  }
+
+  // For every step in sequence - build the entire rendered image.
   fprintf(stderr, "Building rendering sequence, max_length=%d\n",
           (int)max_sequence_length);
   std::vector<Magick::Image> result;
   for (size_t i = 0; i < max_sequence_length; ++i) {
-    // Collect lists of images for left and right sides.
-    std::vector<Magick::Image> stackL;
-    std::vector<Magick::Image> stackR;
+    // In this sequence step - collect images for left and right sides.
+    std::vector<Magick::Image> images_left;
+    std::vector<Magick::Image> images_right;
     for (int j = 0; j < 10; ++j) {
-      Magick::Image* image;
-      if (j >= 5) {
-        stackR.emplace_back();
-        image = &stackR.back();
-      } else {
-        stackL.emplace_back();
-        image = &stackL.back();
-      }
+      std::vector<Magick::Image>& images_side =
+          (j >= 5 ? images_right : images_left);
+      images_side.push_back(image_sequences[j][i]);
 
-      if (i < image_sequences[j].size()) {
-        *image = image_sequences[j][i];
-        // Decrease ref count in the original image, so it doesn't need
-        // to be cloned inside appendImages().
-        image_sequences[j][i] = *empty_image;
-      } else {
-        *image = *empty_image;
-      }
+      // Decrease ref count in the original image, so it doesn't need
+      // to be cloned inside appendImages().
+      image_sequences[j][i] = *empty_image;
 
       // bool is_black = IsImageBlack(image);
-      // scenario->UnicolLightR[stackR.size()] = !is_black;
-      // scenario->UnicolLightL[stackL.size()] = !is_black;
+      // scenario->UnicolLightR[images_right.size()] = !is_black;
+      // scenario->UnicolLightL[images_left.size()] = !is_black;
     }
 
     // Build full contiguous images for left and right.
     Magick::Image side_images[2];
-    Magick::appendImages(&side_images[0], stackR.begin(), stackR.end());
-    Magick::appendImages(&side_images[1], stackL.begin(), stackL.end());
+    Magick::appendImages(&side_images[0], images_right.begin(),
+                         images_right.end());
+    Magick::appendImages(&side_images[1], images_left.begin(),
+                         images_left.end());
 
     // Merge and left and right side into the single image for rendering.
     result.emplace_back();
@@ -536,7 +539,7 @@ int main(int argc, char* argv[]) {
   // signal(SIGINT, InterruptHandler);
   signal(SIGTSTP, InterruptHandler);
 
-  static const int demo_scenarios[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+  static const int demo_scenarios[] = {7, 8, 7, 8, 7, 8, 7, 8, 7, 8};
   LoadScenario(std::vector<int>(demo_scenarios, demo_scenarios + 10));
   current_scenario_idx = 0;
 
