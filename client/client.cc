@@ -342,22 +342,32 @@ static std::vector<Magick::Image> BuildRenderSequence(
       // to be cloned inside appendImages().
       image_sequences[j][i] = *empty_image;
 
+      // The panels layout is vertical, connected bottom-to-top, with the input
+      // at the bottom. RGNMatrix expects input on the right side.
+      // Rotate 90CCW to make things align properly.
+      images_side.back().rotate(-90);
+
       // bool is_black = IsImageBlack(image);
       // scenario->UnicolLightR[images_right.size()] = !is_black;
       // scenario->UnicolLightL[images_left.size()] = !is_black;
     }
 
-    // Build full contiguous images for left and right.
+    // The overall matrix contains 10 chained panels.
+
+    // Reorganize images from bottom-to-top left and right side lists,
+    // to 2 left-to-right contiguous images. One image now contains
+    // data for 5 panels.
     Magick::Image side_images[2];
     Magick::appendImages(&side_images[0], images_right.begin(),
                          images_right.end());
     Magick::appendImages(&side_images[1], images_left.begin(),
                          images_left.end());
 
-    // Merge and left and right side into the single image for rendering.
+    // Merge left and right sides into the single image for rendering.
+    // One image now contains data for all 10 panels.
     result.emplace_back();
     Magick::Image& full_image = result.back();
-    Magick::appendImages(&full_image, side_images, side_images + 2, true);
+    Magick::appendImages(&full_image, side_images, side_images + 2);
   }
 
   return std::move(result);
@@ -433,10 +443,44 @@ int main(int argc, char* argv[]) {
   Magick::InitializeMagick(*argv);
   empty_image = new Magick::Image("32x32", "black");
 
+  //------------------------ANIMATION----------------------------------------
+  //
+  // --led-gpio-mapping=<name> : Name of GPIO mapping used. Default "regular"
+  // --led-rows=<rows>         : Panel rows. Typically 8, 16, 32 or 64.
+  // (Default: 32).
+  // --led-cols=<cols>         : Panel columns. Typically 32 or 64. (Default:
+  // 32).
+  // --led-chain=<chained>     : Number of daisy-chained panels. (Default: 1).
+  // --led-parallel=<parallel> : Parallel chains. range=1..3 (Default: 1).
+  // --led-multiplexing=<0..6> : Mux type: 0=direct; 1=Stripe; 2=Checkered;
+  // 3=Spiral; 4=ZStripe; 5=ZnMirrorZStripe; 6=coreman (Default: 0)
+  // --led-pixel-mapper        : Semicolon-separated list of pixel-mappers to
+  // arrange pixels.
+  //                             Optional params after a colon e.g.
+  //                             "U-mapper;Rotate:90" Available: "Rotate",
+  //                             "U-mapper". Default: ""
+  // --led-pwm-bits=<1..11>    : PWM bits (Default: 11).
+  // --led-brightness=<percent>: Brightness in percent (Default: 100).
+  // --led-scan-mode=<0..1>    : 0 = progressive; 1 = interlaced (Default: 0).
+  // --led-row-addr-type=<0..2>: 0 = default; 1 = AB-addressed panels; 2 =
+  // direct row select(Default: 0).
+  // --led-show-refresh        : Show refresh rate.
+  // --led-inverse             : Switch if your matrix has inverse colors on.
+  // --led-rgb-sequence        : Switch if your matrix has led colors swapped
+  // (Default: "RGB")
+  // --led-pwm-lsb-nanoseconds : PWM Nanoseconds for LSB (Default: 130)
+  // --led-no-hardware-pulse   : Don't use hardware pin-pulse generation.
+  // --led-slowdown-gpio=<0..2>: Slowdown GPIO. Needed for faster Pis/slower
+  // panels (Default: 1).
+  // --led-daemon              : Make the process run in the background as
+  // daemon.
+  // --led-no-drop-privs       : Don't drop privileges from 'root' after
+  // initializing the hardware.
+
   rgb_matrix::RGBMatrix::Options matrix_options;
   matrix_options.rows = 32;
   matrix_options.cols = 32;
-  matrix_options.chain_length = 1;
+  matrix_options.chain_length = 10;
   matrix_options.parallel = 1;
   matrix_options.scan_mode = 0;
   matrix_options.multiplexing = 2;
@@ -484,51 +528,6 @@ int main(int argc, char* argv[]) {
   SetServerAddress("192.168.88.100", 1235);
 
   SetupUnicornPins();
-
-  //
-  //------------------------ANIMATION----------------------------------------
-  //
-  // --led-gpio-mapping=<name> : Name of GPIO mapping used. Default "regular"
-  // --led-rows=<rows>         : Panel rows. Typically 8, 16, 32 or 64.
-  // (Default: 32).
-  // --led-cols=<cols>         : Panel columns. Typically 32 or 64. (Default:
-  // 32).
-  // --led-chain=<chained>     : Number of daisy-chained panels. (Default: 1).
-  // --led-parallel=<parallel> : Parallel chains. range=1..3 (Default: 1).
-  // --led-multiplexing=<0..6> : Mux type: 0=direct; 1=Stripe; 2=Checkered;
-  // 3=Spiral; 4=ZStripe; 5=ZnMirrorZStripe; 6=coreman (Default: 0)
-  // --led-pixel-mapper        : Semicolon-separated list of pixel-mappers to
-  // arrange pixels.
-  //                             Optional params after a colon e.g.
-  //                             "U-mapper;Rotate:90" Available: "Rotate",
-  //                             "U-mapper". Default: ""
-  // --led-pwm-bits=<1..11>    : PWM bits (Default: 11).
-  // --led-brightness=<percent>: Brightness in percent (Default: 100).
-  // --led-scan-mode=<0..1>    : 0 = progressive; 1 = interlaced (Default: 0).
-  // --led-row-addr-type=<0..2>: 0 = default; 1 = AB-addressed panels; 2 =
-  // direct row select(Default: 0).
-  // --led-show-refresh        : Show refresh rate.
-  // --led-inverse             : Switch if your matrix has inverse colors on.
-  // --led-rgb-sequence        : Switch if your matrix has led colors swapped
-  // (Default: "RGB")
-  // --led-pwm-lsb-nanoseconds : PWM Nanoseconds for LSB (Default: 130)
-  // --led-no-hardware-pulse   : Don't use hardware pin-pulse generation.
-  // --led-slowdown-gpio=<0..2>: Slowdown GPIO. Needed for faster Pis/slower
-  // panels (Default: 1).
-  // --led-daemon              : Make the process run in the background as
-  // daemon.
-  // --led-no-drop-privs       : Don't drop privileges from 'root' after
-  // initializing the hardware.
-
-  // matrix_options.rows = 32;
-  // matrix_options.cols = 32;
-  // matrix_options.chain_length = 5;
-  // matrix_options.parallel = 2;
-  // matrix_options.scan_mode = 0;
-  // matrix_options.multiplexing = 2;
-  // matrix_options.led_rgb_sequence = "BGR";
-  // matrix_options.pwm_bits = 7;
-  // matrix_options.brightness = 70;
 
   matrix = CreateMatrixFromOptions(matrix_options, runtime_opt);
   if (matrix == NULL) {
