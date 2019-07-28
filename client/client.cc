@@ -262,32 +262,44 @@ static void TryRunAnimationLoop() {
   }
 }
 
-static std::vector<std::string> GetDirList(const std::string& path)
-{
-    std::vector<std::string> result;
-    DIR* dir = opendir(path.c_str());
-    if (!dir)
-      return result;
+static bool StringEndsWith(const std::string& str, const std::string& suffix) {
+  return (str.size() >= suffix.size() &&
+          0 == str.compare(str.size() - suffix.size(), suffix.size(), suffix));
+}
 
-    while (true) {
-      struct dirent* entry = readdir(dir);
-      if (!entry)
-        break;
+static std::vector<std::string> GetDirList(const std::string& path,
+                                           const std::string& suffix) {
+  std::vector<std::string> result;
+  DIR* dir = opendir(path.c_str());
+  if (!dir) {
+    printf("Unable to list '%s'\n", path.c_str());
+    return result;
+  }
 
-      std::string name(entry->d_name);
-      if (name == "." || name == "..")
-        continue;
+  while (true) {
+    struct dirent* entry = readdir(dir);
+    if (!entry)
+      break;
 
-      if (entry->d_type == DT_REG) {
+    std::string name(entry->d_name);
+    if (name == "." || name == "..")
+      continue;
+
+    if (entry->d_type == DT_REG) {
+      if (suffix.empty() || StringEndsWith(name, suffix)) {
         result.push_back(path + "/" + name);
-      } else if (entry->d_type == DT_DIR) {
-        std::vector<std::string> files = GetDirList(path + "/" + name);
-        result.insert(result.end(), files.begin(), files.end());
       }
+      continue;
     }
 
-    closedir(dir);
-    return result;
+    if (entry->d_type == DT_DIR) {
+      std::vector<std::string> files = GetDirList(path + "/" + name, suffix);
+      result.insert(result.end(), files.begin(), files.end());
+    }
+  }
+
+  closedir(dir);
+  return result;
 }
 
 static void LoadImageFrames(const std::string& path,
@@ -296,7 +308,7 @@ static void LoadImageFrames(const std::string& path,
   if (!path.empty()) {
     try {
       Magick::readImages(&frames, path);
-      printf("readImages for '%s' returned %d images\n", path.c_str(),
+      printf("readImages for '%s' returned %d frames\n", path.c_str(),
              frames.size());
     } catch (Magick::ErrorFileOpen& e) {
       printf("Failed to load image '%s'\n", path.c_str());
@@ -310,6 +322,14 @@ static void LoadImageFrames(const std::string& path,
     output->push_back(std::move(frames[0]));
   } else {
     output->push_back(*empty_image);
+  }
+}
+
+void LoadAllImages() {
+  std::vector<std::string> paths = GetDirList("images", ".gif");
+  for (const auto& path : paths) {
+    std::vector<Magick::Image> frames;
+    LoadImageFrames(path, &frames);
   }
 }
 
@@ -589,6 +609,8 @@ int main(int argc, char* argv[]) {
   static const int demo_scenarios[] = {7, 8, 7, 8, 7, 8, 7, 8, 7, 8};
   LoadScenario(std::vector<int>(demo_scenarios, demo_scenarios + 10));
   current_scenario_idx = 0;
+
+  LoadAllImages();
 
   fprintf(stderr, "Entering processing loop\n");
 
