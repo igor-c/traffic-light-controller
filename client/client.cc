@@ -341,6 +341,14 @@ struct ImageScenario {
   std::vector<ImageSpec> specs;
 
   ImageScenario(const std::string& name) : name(name) {}
+
+  const ImageSpec* FindImage(const std::string& name) const {
+    for (auto& item : specs) {
+      if (item.name == name)
+        return &item;
+    }
+    return nullptr;
+  }
 };
 
 static std::vector<ImageScenario> all_image_scenarios;
@@ -410,39 +418,19 @@ static void LoadAllImages() {
 }*/
 
 static std::vector<Magick::Image> BuildRenderSequence(
-    const std::vector<int>& sequence_ids) {
-  std::vector<std::vector<Magick::Image>> image_sequences;
-  for (int i = 0; i < 10; ++i) {
-    int sequence_id = sequence_ids[i];
-
-    char image_path[256];
-    if (sequence_id) {
-      std::snprintf(image_path, sizeof(image_path), "gif/%d.gif", sequence_id);
-    } else {
-      image_path[0] = 0;
-    }
-
-    printf("Loading scenario #%d: image %s\n", i, image_path);
-    image_sequences.emplace_back();
-    LoadImageFrames(image_path, &image_sequences[i]);
-
-    printf("Image '%s' in scenario #%d has %d frames, size=%dx%d\n", image_path,
-           i, image_sequences[i].size(), image_sequences[i].front().columns(),
-           image_sequences[i].front().rows());
-  }
-
+    std::vector<std::vector<Magick::Image>>* image_sequences) {
   // Calculate the longest sequence length.
   size_t max_sequence_length = 0;
   for (int i = 0; i < 10; ++i) {
-    if (image_sequences[i].size() > max_sequence_length)
-      max_sequence_length = image_sequences[i].size();
+    if ((*image_sequences)[i].size() > max_sequence_length)
+      max_sequence_length = (*image_sequences)[i].size();
   }
 
   // Fill shorter sequences, so they all become the same size.
   for (int i = 0; i < 10; ++i) {
-    size_t missing_count = max_sequence_length - image_sequences[i].size();
+    size_t missing_count = max_sequence_length - (*image_sequences)[i].size();
     for (size_t j = 0; j < missing_count; ++j) {
-      image_sequences[i].push_back(*empty_image);
+      (*image_sequences)[i].push_back(*empty_image);
     }
   }
 
@@ -457,11 +445,11 @@ static std::vector<Magick::Image> BuildRenderSequence(
     for (int j = 0; j < 10; ++j) {
       std::vector<Magick::Image>& images_side =
           (j >= 5 ? images_right : images_left);
-      images_side.push_back(image_sequences[j][i]);
+      images_side.push_back((*image_sequences)[j][i]);
 
       // Decrease ref count in the original image, so it doesn't need
       // to be cloned inside appendImages() or rotate() below.
-      image_sequences[j][i] = *empty_image;
+      //(*image_sequences)[j][i] = *empty_image;
 
       // The panels layout is vertical, connected bottom-to-top, with the input
       // at the bottom. RGNMatrix expects input on the right side.
@@ -535,9 +523,63 @@ static void AddToMatrixStream(Magick::Image* img,
 }
 
 static void LoadScenario(const std::vector<int>& sequence_ids) {
-  fprintf(stderr, "LoadScenario 1\n");
+  std::vector<std::vector<Magick::Image>> image_sequences;
+  for (int i = 0; i < 10; ++i) {
+    int sequence_id = sequence_ids[i];
+
+    char image_path[256];
+    if (sequence_id) {
+      std::snprintf(image_path, sizeof(image_path), "gif/%d.gif", sequence_id);
+    } else {
+      image_path[0] = 0;
+    }
+
+    printf("Loading scenario #%d: image %s\n", i, image_path);
+    image_sequences.emplace_back();
+    LoadImageFrames(image_path, &image_sequences[i]);
+
+    printf("Image '%s' in scenario #%d has %d frames, size=%dx%d\n", image_path,
+           i, image_sequences[i].size(), image_sequences[i].front().columns(),
+           image_sequences[i].front().rows());
+  }
+
   std::vector<Magick::Image> render_sequence =
-      BuildRenderSequence(sequence_ids);
+      BuildRenderSequence(&image_sequences);
+
+  fprintf(stderr, "Loading rendering sequences, count=%d\n",
+          (int)render_sequence.size());
+  // Convert render sequence to RGB Matrix stream.
+  all_scenarios.push_back(new Scenario());
+  rgb_matrix::StreamWriter out(&all_scenarios.back()->content_stream);
+  for (size_t i = 0; i < render_sequence.size(); ++i) {
+    // fprintf(stderr, "LoadScenario %d/%d\n", (int)i,
+    //         (int)render_sequence.size());
+    Magick::Image& img = render_sequence[i];
+    uint32_t hold_time_us = kHoldTimeMs * 1000;
+    AddToMatrixStream(&img, hold_time_us, &out);
+  }
+
+  printf("Finished loading scenario, scenario count = %d\n",
+         (int)all_scenarios.size());
+}
+
+static void LoadScenario(const std::string& name) {
+  ImageScenario* scenario = FindScenario(name);
+  if (!scenario) {
+    fprintf(stderr, "Unable to find scenario '%s'\n", name.c_str());
+    return;
+  }
+
+  std::vector<std::vector<Magick::Image>> image_sequences;
+  for (int i = 0; i < 10; ++i) {
+    const ImageSpec& image = scenario->specs[0];
+    image_sequences.emplace_back();
+    image_sequences.back().insert(image_sequences.back().end(),
+                                  image.frames.begin(), image.frames.end());
+  }
+
+  std::vector<Magick::Image> render_sequence =
+      BuildRenderSequence(&image_sequences);
 
   fprintf(stderr, "Loading rendering sequences, count=%d\n",
           (int)render_sequence.size());
@@ -672,11 +714,12 @@ int main(int argc, char* argv[]) {
   // signal(SIGINT, InterruptHandler);
   signal(SIGTSTP, InterruptHandler);
 
-  static const int demo_scenarios[] = {7, 8, 7, 8, 7, 8, 7, 8, 7, 8};
-  LoadScenario(std::vector<int>(demo_scenarios, demo_scenarios + 10));
-  current_scenario_idx = 0;
-
   LoadAllImages();
+
+  LoadScenario("pac-man");
+  // static const int demo_scenarios[] = {7, 8, 7, 8, 7, 8, 7, 8, 7, 8};
+  // LoadScenario(std::vector<int>(demo_scenarios, demo_scenarios + 10));
+  current_scenario_idx = 0;
 
   fprintf(stderr, "Entering processing loop\n");
 
