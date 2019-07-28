@@ -339,7 +339,7 @@ static std::vector<Magick::Image> BuildRenderSequence(
       images_side.push_back(image_sequences[j][i]);
 
       // Decrease ref count in the original image, so it doesn't need
-      // to be cloned inside appendImages().
+      // to be cloned inside appendImages() or rotate() below.
       image_sequences[j][i] = *empty_image;
 
       // The panels layout is vertical, connected bottom-to-top, with the input
