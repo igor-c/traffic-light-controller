@@ -11,10 +11,12 @@
 #include <utility>
 #include <vector>
 
+#include <dirent.h>
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <sys/time.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <Magick++.h>
@@ -260,22 +262,47 @@ static void TryRunAnimationLoop() {
   }
 }
 
-static void LoadImageSequence(int sequence_id,
-                              std::vector<Magick::Image>* output) {
-  std::vector<Magick::Image> frames;
-  if (sequence_id) {
-    char image_path[256];
-    std::snprintf(image_path, sizeof(image_path), "gif/%d.gif", sequence_id);
-    try {
-      Magick::readImages(&frames, image_path);
-    } catch (Magick::ErrorFileOpen& e) {
-      // Ignore.
+static std::vector<std::string> GetDirList(const std::string& path)
+{
+    std::vector<std::string> result;
+    DIR* dir = opendir(path.c_str());
+    if (!dir)
+      return result;
+
+    while (true) {
+      struct dirent* entry = readdir(dir);
+      if (!entry)
+        break;
+
+      std::string name(entry->d_name);
+      if (name == "." || name == "..")
+        continue;
+
+      if (entry->d_type == DT_REG) {
+        result.push_back(path + "/" + name);
+      } else if (entry->d_type == DT_DIR) {
+        std::vector<std::string> files = GetDirList(path + "/" + name);
+        result.insert(result.end(), files.begin(), files.end());
+      }
     }
-    printf("readImages for '%s' returned %d images\n", image_path,
-           frames.size());
+
+    closedir(dir);
+    return result;
+}
+
+static void LoadImageFrames(const std::string& path,
+                            std::vector<Magick::Image>* output) {
+  std::vector<Magick::Image> frames;
+  if (!path.empty()) {
+    try {
+      Magick::readImages(&frames, path);
+      printf("readImages for '%s' returned %d images\n", path.c_str(),
+             frames.size());
+    } catch (Magick::ErrorFileOpen& e) {
+      printf("Failed to load image '%s'\n", path.c_str());
+    }
   }
 
-  output->clear();
   if (frames.size() > 1) {
     // Unpack an animated GIF into a series of same-size frames.
     Magick::coalesceImages(output, frames.begin(), frames.end());
@@ -305,9 +332,17 @@ static std::vector<Magick::Image> BuildRenderSequence(
   std::vector<std::vector<Magick::Image>> image_sequences;
   for (int i = 0; i < 10; ++i) {
     int sequence_id = sequence_ids[i];
-    printf("Loading scenario #%d: image %d\n", i, sequence_id);
+
+    char image_path[256];
+    if (sequence_id) {
+      std::snprintf(image_path, sizeof(image_path), "gif/%d.gif", sequence_id);
+    } else {
+      image_path[0] = 0;
+    }
+
+    printf("Loading scenario #%d: image %s\n", i, image_path);
     image_sequences.emplace_back();
-    LoadImageSequence(sequence_id, &image_sequences[i]);
+    LoadImageFrames(image_path, &image_sequences[i]);
   }
 
   // Calculate the longest sequence length.
