@@ -11,28 +11,23 @@
 #include <utility>
 #include <vector>
 
-#include <dirent.h>
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <sys/time.h>
-#include <sys/types.h>
 #include <unistd.h>
 
-#include <Magick++.h>
-#include <magick/image.h>
 #include <wiringPi.h>
 
 #include "content-streamer.h"
+#include "image.h"
 #include "led-matrix.h"
 #include "network.h"
 #include "pixel-mapper.h"
 
-constexpr bool kDoCenter = false;
-constexpr uint32_t kHoldTimeMs = 125;
 constexpr int kVsyncMultiple = 1;
 
-struct Scenario {
+struct ScenarioStream {
   rgb_matrix::MemStreamIO content_stream;
   std::vector<bool> UnicolLightL[5];
   std::vector<bool> UnicolLightR[5];
@@ -64,18 +59,16 @@ class UserTCPprotocol {
 #define CM_OFF 0
 
 // Scenario-related controls:
-static std::vector<Scenario*> all_scenarios;
+static std::vector<ScenarioStream*> all_scenarios;
 static int current_scenario_idx = -1;
 static bool is_traffic_light_started = false;
 
-static const Magick::Image* empty_image;
 static rgb_matrix::RGBMatrix* matrix;
+static rgb_matrix::FrameCanvas* stream_creation_canvas = nullptr;
 static bool should_interrupt_animation_loop = false;
 static bool has_received_signal = false;
 static uint8_t clientName =
     static_cast<uint8_t>(UserTCPprotocol::ClientName::TL12);
-
-static void LoadScenario(const std::vector<int>& sequence_ids);
 
 //------------------------SERVER-------------------------------------------
 
@@ -184,7 +177,7 @@ void DoCmd(uint8_t* data) {
         sequence_ids.push_back(data[4 + i]);
       }
       should_interrupt_animation_loop = true;
-      LoadScenario(sequence_ids);
+      // TODO(igorc): LoadScenario(sequence_ids);
     } else if (data[2] ==
                static_cast<int>(UserTCPprotocol::Scenario::NEXTCOMBO)) {
       if (data[3] < all_scenarios.size()) {
@@ -224,7 +217,7 @@ static void TryRunAnimationLoop() {
     uint32_t hold_time_us = 0;
     // Make a copy of scenario since a new one can be added,
     // relocating all the data in memory.
-    Scenario* scenario = all_scenarios[current_scenario_idx];
+    ScenarioStream* scenario = all_scenarios[current_scenario_idx];
     rgb_matrix::StreamReader reader(&scenario->content_stream);
     while (!should_interrupt_animation_loop &&
            reader.GetNext(offscreen_canvas, &hold_time_us)) {
@@ -262,340 +255,37 @@ static void TryRunAnimationLoop() {
   }
 }
 
-static bool StringEndsWith(const std::string& str, const std::string& suffix) {
-  return (str.size() >= suffix.size() &&
-          0 == str.compare(str.size() - suffix.size(), suffix.size(), suffix));
-}
-
-static bool StringStartsWith(const std::string& str,
-                             const std::string& prefix) {
-  return (str.size() >= prefix.size() &&
-          0 == str.compare(0, prefix.size(), prefix));
-}
-
-static std::vector<std::string> GetDirList(const std::string& path,
-                                           const std::string& suffix) {
-  std::vector<std::string> result;
-  DIR* dir = opendir(path.c_str());
-  if (!dir) {
-    printf("Unable to list '%s'\n", path.c_str());
-    return result;
-  }
-
-  while (true) {
-    struct dirent* entry = readdir(dir);
-    if (!entry)
-      break;
-
-    std::string name(entry->d_name);
-    if (name == "." || name == "..")
-      continue;
-
-    if (entry->d_type == DT_REG) {
-      if (suffix.empty() || StringEndsWith(name, suffix)) {
-        result.push_back(path + "/" + name);
-      }
-      continue;
-    }
-
-    if (entry->d_type == DT_DIR) {
-      std::vector<std::string> files = GetDirList(path + "/" + name, suffix);
-      result.insert(result.end(), files.begin(), files.end());
-    }
-  }
-
-  closedir(dir);
-  return result;
-}
-
-static void LoadImageFrames(const std::string& path,
-                            std::vector<Magick::Image>* output) {
-  std::vector<Magick::Image> frames;
-  if (!path.empty()) {
-    try {
-      Magick::readImages(&frames, path);
-    } catch (Magick::ErrorFileOpen& e) {
-      printf("Failed to load image '%s'\n", path.c_str());
-    }
-  }
-
-  if (frames.size() > 1) {
-    // Unpack an animated GIF into a series of same-size frames.
-    Magick::coalesceImages(output, frames.begin(), frames.end());
-  } else if (frames.size() == 1) {
-    output->push_back(std::move(frames[0]));
-  } else {
-    output->push_back(*empty_image);
-  }
-}
-
-struct ImageSpec {
-  std::string name;
-  std::vector<Magick::Image> frames;
-
-  ImageSpec(const std::string& name) : name(name) {}
-};
-
-struct ImageScenario {
-  std::string name;
-  std::vector<ImageSpec> specs;
-
-  ImageScenario(const std::string& name) : name(name) {}
-
-  const ImageSpec* FindImage(const std::string& name) const {
-    for (auto& item : specs) {
-      if (item.name == name)
-        return &item;
-    }
-    return nullptr;
-  }
-};
-
-static std::vector<ImageScenario> all_image_scenarios;
-
-static ImageScenario* FindScenario(const std::string& name) {
-  for (auto& item : all_image_scenarios) {
-    if (item.name == name)
-      return &item;
-  }
-  return nullptr;
-}
-
-static void LoadAllImages() {
-  std::vector<std::string> paths = GetDirList("images", ".gif");
-  for (const auto& path : paths) {
-    std::string name = path;
-    std::transform(name.begin(), name.end(), name.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-    name = name.substr(7, path.size() - 7 - 4);
-
-    size_t p = name.find('/');
-    if (p == std::string::npos) {
-      printf("No directory found for image '%s'\n", path.c_str());
-      continue;
-    }
-
-    std::string scenario_name = name.substr(0, p);
-    name = name.substr(p + 1);
-
-    if (name.find('/') != std::string::npos) {
-      printf("Double-nested directories not supported: '%s'\n", path.c_str());
-      continue;
-    }
-
-    if (StringStartsWith(name, scenario_name + "_")) {
-      name = name.substr(scenario_name.size() + 1);
-    }
-
-    ImageScenario* scenario = FindScenario(scenario_name);
-    if (!scenario) {
-      all_image_scenarios.emplace_back(scenario_name);
-      scenario = &all_image_scenarios.back();
-    }
-
-    scenario->specs.emplace_back(name);
-    auto& frames = scenario->specs.back().frames;
-    LoadImageFrames(path, &frames);
-
-    printf("Scenario '%s', image '%s', path '%s', has %d frames, size=%dx%d\n",
-           scenario_name.c_str(), name.c_str(), path.c_str(), frames.size(),
-           frames.front().columns(), frames.front().rows());
-  }
-}
-
-/*static bool IsImageBlack(const Magick::Image& image) {
-  int image_width = image.columns();
-  int image_height = image.rows();
-  bool isEmptry = true;
-  for (int row = 0; row <= image_height; row++) {
-    for (int column = 0; column <= image_width; column++) {
-      Magick::ColorRGB px = image.pixelColor(column, row);
-      if (px.red() > 0 || px.green() > 0 || px.blue() > 0)
-        return false;
-    }
-  }
-  return true;
-}*/
-
-static std::vector<Magick::Image> BuildRenderSequence(
-    std::vector<std::vector<Magick::Image>>* image_sequences) {
-  // Calculate the longest sequence length.
-  size_t max_sequence_length = 0;
-  for (int i = 0; i < 10; ++i) {
-    if ((*image_sequences)[i].size() > max_sequence_length)
-      max_sequence_length = (*image_sequences)[i].size();
-  }
-
-  // Fill shorter sequences, so they all become the same size.
-  for (int i = 0; i < 10; ++i) {
-    size_t missing_count = max_sequence_length - (*image_sequences)[i].size();
-    for (size_t j = 0; j < missing_count; ++j) {
-      (*image_sequences)[i].push_back(*empty_image);
-    }
-  }
-
-  // For every step in sequence - build the entire rendered image.
-  fprintf(stderr, "Building rendering sequence, max_length=%d\n",
-          (int)max_sequence_length);
-  std::vector<Magick::Image> result;
-  for (size_t i = 0; i < max_sequence_length; ++i) {
-    // In this sequence step - collect images for left and right sides.
-    std::vector<Magick::Image> images_left;
-    std::vector<Magick::Image> images_right;
-    for (int j = 0; j < 10; ++j) {
-      std::vector<Magick::Image>& images_side =
-          (j >= 5 ? images_right : images_left);
-      images_side.push_back((*image_sequences)[j][i]);
-
-      // Decrease ref count in the original image, so it doesn't need
-      // to be cloned inside appendImages() or rotate() below.
-      //(*image_sequences)[j][i] = *empty_image;
-
-      // The panels layout is vertical, connected bottom-to-top, with the input
-      // at the bottom. RGNMatrix expects input on the right side.
-      // Rotate 90CCW to make things align properly.
-      images_side.back().rotate(-90);
-
-      // bool is_black = IsImageBlack(image);
-      // scenario->UnicolLightR[images_right.size()] = !is_black;
-      // scenario->UnicolLightL[images_left.size()] = !is_black;
-    }
-
-    // The overall matrix contains 10 chained panels.
-
-    // Reorganize images from bottom-to-top left and right side lists,
-    // to 2 left-to-right contiguous images. One image now contains
-    // data for 5 panels.
-    Magick::Image side_images[2];
-    Magick::appendImages(&side_images[0], images_right.begin(),
-                         images_right.end());
-    Magick::appendImages(&side_images[1], images_left.begin(),
-                         images_left.end());
-
-    // Merge left and right sides into the single image for rendering.
-    // One image now contains data for all 10 panels.
-    result.emplace_back();
-    Magick::Image& full_image = result.back();
-    Magick::appendImages(&full_image, side_images, side_images + 2);
-  }
-
-  return std::move(result);
-}
-
-// |hold_time_us| indicates for how long this frame is to be shown
-// in microseconds.
-static void AddToMatrixStream(Magick::Image* img,
-                              uint32_t hold_time_us,
-                              rgb_matrix::StreamWriter* output) {
-  static rgb_matrix::FrameCanvas* canvas = nullptr;
-  if (!canvas)
-    canvas = matrix->CreateFrameCanvas();
-
-  const int src_width = img->columns();
-  const int src_height = img->rows();
-  const int x_offset = kDoCenter ? (canvas->width() - src_width) / 2 : 0;
-  const int y_offset = kDoCenter ? (canvas->height() - src_height) / 2 : 0;
-
-  const Magick::PixelPacket* pixels =
-      img->getConstPixels(0, 0, src_width, src_height);
-  // uint8_t* pixels = new uint8_t[src_width * src_height * 4];
-  // img->writePixels(Magick::QuantumType::RGBAQuantum, (unsigned char*)
-  // pixels);
-
-  canvas->Clear();
-  const Magick::PixelPacket* c = pixels;
-  for (int y = 0; y < src_height; ++y) {
-    for (int x = 0; x < src_width; ++x) {
-      if (c->opacity < 256) {
-        canvas->SetPixel(x + x_offset, y + y_offset, ScaleQuantumToChar(c->red),
-                         ScaleQuantumToChar(c->green),
-                         ScaleQuantumToChar(c->blue));
-        // ScaleQuantumToChar(c[0]),
-        // ScaleQuantumToChar(c[1]),
-        // ScaleQuantumToChar(c[2]));
-        // c[0], c[1], c[2]);
-      }
-      c += 1;
-    }
-  }
-
-  output->Stream(*canvas, hold_time_us);
-}
-
-static void LoadScenario(const std::vector<int>& sequence_ids) {
-  std::vector<std::vector<Magick::Image>> image_sequences;
-  for (int i = 0; i < 10; ++i) {
-    int sequence_id = sequence_ids[i];
-
-    char image_path[256];
-    if (sequence_id) {
-      std::snprintf(image_path, sizeof(image_path), "gif/%d.gif", sequence_id);
-    } else {
-      image_path[0] = 0;
-    }
-
-    printf("Loading scenario #%d: image %s\n", i, image_path);
-    image_sequences.emplace_back();
-    LoadImageFrames(image_path, &image_sequences[i]);
-
-    printf("Image '%s' in scenario #%d has %d frames, size=%dx%d\n", image_path,
-           i, image_sequences[i].size(), image_sequences[i].front().columns(),
-           image_sequences[i].front().rows());
-  }
-
-  std::vector<Magick::Image> render_sequence =
-      BuildRenderSequence(&image_sequences);
-
-  fprintf(stderr, "Loading rendering sequences, count=%d\n",
-          (int)render_sequence.size());
-  // Convert render sequence to RGB Matrix stream.
-  all_scenarios.push_back(new Scenario());
-  rgb_matrix::StreamWriter out(&all_scenarios.back()->content_stream);
-  for (size_t i = 0; i < render_sequence.size(); ++i) {
-    // fprintf(stderr, "LoadScenario %d/%d\n", (int)i,
-    //         (int)render_sequence.size());
-    Magick::Image& img = render_sequence[i];
-    uint32_t hold_time_us = kHoldTimeMs * 1000;
-    AddToMatrixStream(&img, hold_time_us, &out);
-  }
-
-  printf("Finished loading scenario, scenario count = %d\n",
-         (int)all_scenarios.size());
-}
-
 static void LoadScenario(const std::string& name) {
-  ImageScenario* scenario = FindScenario(name);
-  if (!scenario) {
-    fprintf(stderr, "Unable to find scenario '%s'\n", name.c_str());
+  Collection* collection = FindCollection(name);
+  if (!collection) {
+    fprintf(stderr, "Unable to find collection '%s'\n", name.c_str());
     return;
   }
 
-  std::vector<std::vector<Magick::Image>> image_sequences;
-  for (int i = 0; i < 10; ++i) {
-    const ImageSpec& image = scenario->specs[0];
-    image_sequences.emplace_back();
-    image_sequences.back().insert(image_sequences.back().end(),
-                                  image.frames.begin(), image.frames.end());
+  printf("Loading scenario '%s'\n", name.c_str());
+
+  std::vector<const Animation*> animations;
+
+  const Animation* red = collection->FindAnimation("red");
+  const Animation* green = collection->FindAnimation("green");
+  if (red && green) {
+    animations.push_back(green);
+    animations.push_back(red);
+    for (int i = 0; i < 8; ++i) {
+      animations.push_back(green);
+    }
+  } else {
+    for (int i = 0; i < 10; ++i) {
+      const Animation& animation = collection->animations[0];
+      animations.push_back(&animation);
+    }
   }
 
-  std::vector<Magick::Image> render_sequence =
-      BuildRenderSequence(&image_sequences);
+  all_scenarios.push_back(new ScenarioStream());
+  RenderAnimations(animations, stream_creation_canvas,
+                   &all_scenarios.back()->content_stream);
 
-  fprintf(stderr, "Loading rendering sequences, count=%d\n",
-          (int)render_sequence.size());
-  // Convert render sequence to RGB Matrix stream.
-  all_scenarios.push_back(new Scenario());
-  rgb_matrix::StreamWriter out(&all_scenarios.back()->content_stream);
-  for (size_t i = 0; i < render_sequence.size(); ++i) {
-    // fprintf(stderr, "LoadScenario %d/%d\n", (int)i,
-    //         (int)render_sequence.size());
-    Magick::Image& img = render_sequence[i];
-    uint32_t hold_time_us = kHoldTimeMs * 1000;
-    AddToMatrixStream(&img, hold_time_us, &out);
-  }
-
-  printf("Finished loading scenario, scenario count = %d\n",
-         (int)all_scenarios.size());
+  printf("Finished loading scenario '%s'\n", name.c_str());
 }
 
 static void SetupUnicornPins() {
@@ -616,9 +306,6 @@ static void SetupUnicornPins() {
 //------------------------MAIN----------------------------------------
 //
 int main(int argc, char* argv[]) {
-  Magick::InitializeMagick(*argv);
-  empty_image = new Magick::Image("32x32", "black");
-
   //------------------------ANIMATION----------------------------------------
   //
   // --led-gpio-mapping=<name> : Name of GPIO mapping used. Default "regular"
@@ -705,20 +392,25 @@ int main(int argc, char* argv[]) {
 
   SetupUnicornPins();
 
+  InitImages();
+
   matrix = CreateMatrixFromOptions(matrix_options, runtime_opt);
   if (matrix == NULL) {
     return 1;
   }
 
+  stream_creation_canvas = matrix->CreateFrameCanvas();
+
   // signal(SIGTERM, InterruptHandler);
   // signal(SIGINT, InterruptHandler);
   signal(SIGTSTP, InterruptHandler);
 
-  LoadAllImages();
-
-  LoadScenario("pac-man");
   // static const int demo_scenarios[] = {7, 8, 7, 8, 7, 8, 7, 8, 7, 8};
-  // LoadScenario(std::vector<int>(demo_scenarios, demo_scenarios + 10));
+  // CreateIntBasedScenario(std::vector<int>(demo_scenarios,
+  //                                         demo_scenarios + 10));
+
+  // LoadScenario("pac-man");
+  LoadScenario("ufo");
   current_scenario_idx = 0;
 
   fprintf(stderr, "Entering processing loop\n");
