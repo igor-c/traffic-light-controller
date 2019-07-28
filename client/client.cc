@@ -267,6 +267,12 @@ static bool StringEndsWith(const std::string& str, const std::string& suffix) {
           0 == str.compare(str.size() - suffix.size(), suffix.size(), suffix));
 }
 
+static bool StringStartsWith(const std::string& str,
+                             const std::string& prefix) {
+  return (str.size() >= prefix.size() &&
+          0 == str.compare(0, prefix.size(), prefix));
+}
+
 static std::vector<std::string> GetDirList(const std::string& path,
                                            const std::string& suffix) {
   std::vector<std::string> result;
@@ -308,8 +314,6 @@ static void LoadImageFrames(const std::string& path,
   if (!path.empty()) {
     try {
       Magick::readImages(&frames, path);
-      printf("readImages for '%s' returned %d frames\n", path.c_str(),
-             frames.size());
     } catch (Magick::ErrorFileOpen& e) {
       printf("Failed to load image '%s'\n", path.c_str());
     }
@@ -325,11 +329,69 @@ static void LoadImageFrames(const std::string& path,
   }
 }
 
-void LoadAllImages() {
+struct ImageSpec {
+  std::string name;
+  std::vector<Magick::Image> frames;
+
+  ImageSpec(const std::string& name) : name(name) {}
+};
+
+struct ImageScenario {
+  std::string name;
+  std::vector<ImageSpec> specs;
+
+  ImageScenario(const std::string& name) : name(name) {}
+};
+
+static std::vector<ImageScenario> all_image_scenarios;
+
+static ImageScenario* FindScenario(const std::string& name) {
+  for (auto& item : all_image_scenarios) {
+    if (item.name == name)
+      return &item;
+  }
+  return nullptr;
+}
+
+static void LoadAllImages() {
   std::vector<std::string> paths = GetDirList("images", ".gif");
   for (const auto& path : paths) {
-    std::vector<Magick::Image> frames;
+    std::string name = path;
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    name = name.substr(7, path.size() - 7 - 4);
+
+    size_t p = name.find('/');
+    if (p == std::string::npos) {
+      printf("No directory found for image '%s'\n", path.c_str());
+      continue;
+    }
+
+    std::string scenario_name = name.substr(0, p);
+    name = name.substr(p + 1);
+
+    if (name.find('/') != std::string::npos) {
+      printf("Double-nested directories not supported: '%s'\n", path.c_str());
+      continue;
+    }
+
+    if (StringStartsWith(name, scenario_name + "_")) {
+      name = name.substr(scenario_name.size() + 1);
+    }
+
+    ImageScenario* scenario = FindScenario(scenario_name);
+    if (!scenario) {
+      all_image_scenarios.emplace_back(scenario_name);
+      scenario = &all_image_scenarios.back();
+    }
+
+    scenario->specs.emplace_back(name);
+    auto& frames = scenario->specs.back().frames;
     LoadImageFrames(path, &frames);
+
+    printf("Scenario '%s', image '%s', path '%s', has %d frames, size=%dx%d\n",
+           scenario_name.c_str(), name.c_str(), path.c_str(), frames.size(),
+           frames.front().columns(), frames.front().rows());
   }
 }
 
@@ -363,6 +425,10 @@ static std::vector<Magick::Image> BuildRenderSequence(
     printf("Loading scenario #%d: image %s\n", i, image_path);
     image_sequences.emplace_back();
     LoadImageFrames(image_path, &image_sequences[i]);
+
+    printf("Image '%s' in scenario #%d has %d frames, size=%dx%d\n", image_path,
+           i, image_sequences[i].size(), image_sequences[i].front().columns(),
+           image_sequences[i].front().rows());
   }
 
   // Calculate the longest sequence length.
