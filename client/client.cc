@@ -375,25 +375,38 @@ static std::vector<Magick::Image> BuildRenderSequence(
 
 // |hold_time_us| indicates for how long this frame is to be shown
 // in microseconds.
-static void AddToMatrixStream(const Magick::Image& img,
+static void AddToMatrixStream(Magick::Image* img,
                               uint32_t hold_time_us,
                               rgb_matrix::StreamWriter* output) {
   static rgb_matrix::FrameCanvas* canvas = nullptr;
   if (!canvas)
     canvas = matrix->CreateFrameCanvas();
 
+  const int src_width = img->columns();
+  const int src_height = img->rows();
+  const int x_offset = kDoCenter ? (canvas->width() - src_width) / 2 : 0;
+  const int y_offset = kDoCenter ? (canvas->height() - src_height) / 2 : 0;
+
+  const Magick::PixelPacket* pixels =
+      img->getConstPixels(0, 0, src_width, src_height);
+  // uint8_t* pixels = new uint8_t[src_width * src_height * 4];
+  // img->writePixels(Magick::QuantumType::RGBAQuantum, (unsigned char*)
+  // pixels);
+
   canvas->Clear();
-  const int x_offset = kDoCenter ? (canvas->width() - img.columns()) / 2 : 0;
-  const int y_offset = kDoCenter ? (canvas->height() - img.rows()) / 2 : 0;
-  for (size_t y = 0; y < img.rows(); ++y) {
-    for (size_t x = 0; x < img.columns(); ++x) {
-      const Magick::Color& c = img.pixelColor(x, y);
-      if (c.alphaQuantum() < 256) {
-        canvas->SetPixel(x + x_offset, y + y_offset,
-                         ScaleQuantumToChar(c.redQuantum()),
-                         ScaleQuantumToChar(c.greenQuantum()),
-                         ScaleQuantumToChar(c.blueQuantum()));
+  const Magick::PixelPacket* c = pixels;
+  for (int y = 0; y < src_height; ++y) {
+    for (int x = 0; x < src_width; ++x) {
+      if (c->opacity < 256) {
+        canvas->SetPixel(x + x_offset, y + y_offset, ScaleQuantumToChar(c->red),
+                         ScaleQuantumToChar(c->green),
+                         ScaleQuantumToChar(c->blue));
+        // ScaleQuantumToChar(c[0]),
+        // ScaleQuantumToChar(c[1]),
+        // ScaleQuantumToChar(c[2]));
+        // c[0], c[1], c[2]);
       }
+      c += 1;
     }
   }
 
@@ -411,11 +424,11 @@ static void LoadScenario(const std::vector<int>& sequence_ids) {
   all_scenarios.push_back(new Scenario());
   rgb_matrix::StreamWriter out(&all_scenarios.back()->content_stream);
   for (size_t i = 0; i < render_sequence.size(); ++i) {
-    fprintf(stderr, "LoadScenario %d/%d\n", (int)i,
-            (int)render_sequence.size());
-    const Magick::Image& img = render_sequence[i];
+    // fprintf(stderr, "LoadScenario %d/%d\n", (int)i,
+    //         (int)render_sequence.size());
+    Magick::Image& img = render_sequence[i];
     uint32_t hold_time_us = kHoldTimeMs * 1000;
-    AddToMatrixStream(img, hold_time_us, &out);
+    AddToMatrixStream(&img, hold_time_us, &out);
   }
 
   printf("Finished loading scenario, scenario count = %d\n",
