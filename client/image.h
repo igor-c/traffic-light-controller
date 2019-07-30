@@ -9,8 +9,10 @@
 
 namespace rgb_matrix {
 class FrameCanvas;
-class MemStreamIO;
 }
+
+// Indicates for how long a frame is to be shown.
+static constexpr uint32_t kHoldTimeMs = 125;
 
 class Frame {
  public:
@@ -68,6 +70,8 @@ void InitImages();
 void CreateIntBasedCollection(const std::string& name,
                               const std::vector<int>& sequence_ids);
 
-void RenderAnimations(const std::vector<const Animation*>& animations,
-                      rgb_matrix::FrameCanvas* canvas,
-                      rgb_matrix::MemStreamIO* output);
+size_t GetMaxFrameCount(const std::vector<const Animation*>& animations);
+
+bool RenderFrame(const std::vector<const Animation*>& animations,
+                 size_t frame_id,
+                 rgb_matrix::FrameCanvas* canvas);

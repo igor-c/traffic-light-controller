@@ -10,11 +10,7 @@
 
 #include <Magick++.h>
 
-#include "content-streamer.h"
 #include "led-matrix.h"
-
-// Indicates for how long this frame is to be shown in microseconds.
-static constexpr uint32_t kHoldTimeUs = 125 * 1000;
 
 static const Frame* empty_frame = nullptr;
 static std::vector<Collection> all_collections;
@@ -280,8 +276,7 @@ void CreateIntBasedCollection(const std::string& name,
   printf("Finished creating int-based collection '%s'\n", name.c_str());
 }
 
-static size_t GetMaxFrameCount(
-    const std::vector<const Animation*>& animations) {
+size_t GetMaxFrameCount(const std::vector<const Animation*>& animations) {
   size_t result = 0;
   for (const Animation* animation : animations) {
     if (animation->frames.size() > result)
@@ -290,60 +285,38 @@ static size_t GetMaxFrameCount(
   return result;
 }
 
-static void RenderFrame(const Frame& frame,
-                        rgb_matrix::FrameCanvas* canvas,
-                        size_t position) {
-  size_t frame_width = frame.width();
-  size_t frame_height = frame.height();
-  size_t position_count = (size_t)canvas->width() / frame_width;
-  if ((size_t)canvas->height() != frame_height ||
-      (size_t)canvas->width() % frame_width != 0 ||
-      position >= position_count) {
-    printf("Unexpected canvas size of %dx%d, frame size=%dx%d, position=%d\n",
-           canvas->width(), canvas->height(), frame_width, frame_height,
-           position);
-    return;
-  }
+bool RenderFrame(const std::vector<const Animation*>& animations,
+                 size_t frame_id,
+                 rgb_matrix::FrameCanvas* canvas) {
+  for (size_t i = 0; i < animations.size(); ++i) {
+    const std::vector<Frame>& frames = animations[i]->frames;
+    const Frame& frame =
+        (frame_id < frames.size() ? frames[frame_id] : frames.back());
 
-  // Rendering starts from the end of the image, reverse positions.
-  position = position_count - position - 1;
-  size_t x_offset = position * frame_width;
-
-  if (frame_height != (size_t)canvas->height() ||
-      x_offset + frame_width > (size_t)canvas->width()) {
-    printf(
-        "Unexpected canvas size of %dx%d, image position %d, "
-        "frame size=%dx%d\n",
-        canvas->width(), canvas->height(), position, frame_width, frame_height);
-    return;
-  }
-
-  for (size_t y = 0; y < frame_height; ++y) {
-    const uint8_t* c = frame.data() + y * frame.stride();
-    for (size_t x = 0; x < frame_width; ++x) {
-      canvas->SetPixel(x + x_offset, y, c[0], c[1], c[2]);
-      c += Frame::kPixelWidth;
-    }
-  }
-}
-
-void RenderAnimations(const std::vector<const Animation*>& animations,
-                      rgb_matrix::FrameCanvas* canvas,
-                      rgb_matrix::MemStreamIO* output) {
-  size_t frame_count = GetMaxFrameCount(animations);
-  if (!frame_count)
-    return;
-
-  rgb_matrix::StreamWriter writer(output);
-  for (size_t frame_id = 0; frame_id < frame_count; ++frame_id) {
-    canvas->Clear();
-    for (size_t i = 0; i < animations.size(); ++i) {
-      const std::vector<Frame>& frames = animations[i]->frames;
-      const Frame& frame =
-          (frame_id < frames.size() ? frames[frame_id] : frames.back());
-      RenderFrame(frame, canvas, i);
+    size_t frame_width = frame.width();
+    size_t frame_height = frame.height();
+    size_t position_count = (size_t)canvas->width() / frame_width;
+    if ((size_t)canvas->height() != frame_height ||
+        (size_t)canvas->width() % frame_width != 0 || i >= position_count) {
+      printf(
+          "Unexpected canvas size of %dx%d, frame size=%dx%d, frame=%d, "
+          "animation=%s\n",
+          canvas->width(), canvas->height(), frame_width, frame_height, i,
+          animations[i]->name.c_str());
+      return false;
     }
 
-    writer.Stream(*canvas, kHoldTimeUs);
+    // Rendering starts from the end of the image, reverse positions.
+    size_t x_offset = (position_count - i - 1) * frame_width;
+
+    for (size_t y = 0; y < frame_height; ++y) {
+      const uint8_t* c = frame.data() + y * frame.stride();
+      for (size_t x = 0; x < frame_width; ++x) {
+        canvas->SetPixel(x + x_offset, y, c[0], c[1], c[2]);
+        c += Frame::kPixelWidth;
+      }
+    }
   }
+
+  return true;
 }

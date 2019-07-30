@@ -28,7 +28,7 @@
 constexpr int kVsyncMultiple = 1;
 
 struct ScenarioStream {
-  rgb_matrix::MemStreamIO content_stream;
+  std::vector<const Animation*> animations;
   std::vector<bool> UnicolLightL[5];
   std::vector<bool> UnicolLightR[5];
 };
@@ -176,13 +176,13 @@ void DoCmd(uint8_t* data) {
       for (int i = 0; i < 10; ++i) {
         sequence_ids.push_back(data[4 + i]);
       }
-      should_interrupt_animation_loop = true;
       // TODO(igorc): LoadScenario(sequence_ids);
+      should_interrupt_animation_loop = true;
     } else if (data[2] ==
                static_cast<int>(UserTCPprotocol::Scenario::NEXTCOMBO)) {
       if (data[3] < all_scenarios.size()) {
-        should_interrupt_animation_loop = true;
         current_scenario_idx = data[3];
+        should_interrupt_animation_loop = true;
       }
     }
   }
@@ -212,32 +212,72 @@ static void TryRunAnimationLoop() {
 
   ReadSocketAndExecuteCommands();
 
-  bool has_drawn = false;
-  while (!should_interrupt_animation_loop && current_scenario_idx >= 0) {
-    uint32_t hold_time_us = 0;
-    // Make a copy of scenario since a new one can be added,
-    // relocating all the data in memory.
-    ScenarioStream* scenario = all_scenarios[current_scenario_idx];
-    rgb_matrix::StreamReader reader(&scenario->content_stream);
-    while (!should_interrupt_animation_loop &&
-           reader.GetNext(offscreen_canvas, &hold_time_us)) {
-      uint64_t deadline_time = GetTimeInMillis() + hold_time_us / 1000;
-
-      // digitalWrite(UniconLight0, scenario->UnicolLightL[0].at(seqInd));
-      // digitalWrite(UniconLight1, scenario->UnicolLightL[1].at(seqInd));
-      // digitalWrite(UniconLight2, scenario->UnicolLightL[2].at(seqInd));
-
-      offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, kVsyncMultiple);
-
+  uint64_t next_processing_time = GetTimeInMillis();
+  int frame_id = -1;
+  int frame_count = 0;
+  int prev_scenario_idx = -1;
+  const std::vector<const Animation*>* animations = nullptr;
+  while (!should_interrupt_animation_loop) {
+    uint64_t cur_time = GetTimeInMillis();
+    if (next_processing_time > cur_time) {
+      SleepMillis(next_processing_time - cur_time);
+      // Read commands in the time space between frames.
       ReadSocketAndExecuteCommands();
-
-      has_drawn = true;
-      uint64_t cur_time = GetTimeInMillis();
-      if (cur_time < deadline_time)
-        SleepMillis(deadline_time - cur_time);
+      continue;
     }
 
-    ReadSocketAndExecuteCommands();
+    // Just in case there's an early "continue", force the caller
+    // to offload CPU since TCP read is non-blocking.
+    next_processing_time = cur_time + 100;
+
+    if (current_scenario_idx != prev_scenario_idx) {
+      animations = nullptr;
+      frame_count = 0;
+      frame_id = -1;
+      prev_scenario_idx = current_scenario_idx;
+    }
+
+    if (current_scenario_idx < 0) {
+      // The animations have been disabled, erase all pointers.
+      animations = nullptr;
+      frame_count = 0;
+      frame_id = -1;
+      continue;
+    }
+
+    if (!animations) {
+      // Look up animation data if it's not active yet.
+      animations = &all_scenarios[current_scenario_idx]->animations;
+      frame_count = GetMaxFrameCount(*animations);
+      if (!frame_count) {
+        animations = nullptr;
+        continue;
+      }
+      frame_id = 0;
+    }
+
+    if (frame_id == frame_count) {
+      // Animation has finished - start from the beginning.
+      frame_id = 0;
+    }
+
+    // Render the current frame, and advance.
+    next_processing_time = cur_time + kHoldTimeMs;
+
+    // offscreen_canvas->Clear();
+    if (!RenderFrame(*animations, frame_id, offscreen_canvas)) {
+      fprintf(stderr, "Failed to render, resetting scenario\n");
+      current_scenario_idx = -1;
+      continue;
+    }
+
+    frame_id++;
+
+    offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, kVsyncMultiple);
+
+    // digitalWrite(UniconLight0, scenario->UnicolLightL[0].at(seqInd));
+    // digitalWrite(UniconLight1, scenario->UnicolLightL[1].at(seqInd));
+    // digitalWrite(UniconLight2, scenario->UnicolLightL[2].at(seqInd));
   }
 
   if (!is_traffic_light_started) {
@@ -248,11 +288,6 @@ static void TryRunAnimationLoop() {
     all_scenarios.clear();
     matrix->Clear();
   }
-
-  if (!has_drawn) {
-    // Force the caller to offload CPU since TCP read is non-blocking.
-    SleepMillis(100);
-  }
 }
 
 static void LoadScenario(const std::string& name) {
@@ -261,8 +296,6 @@ static void LoadScenario(const std::string& name) {
     fprintf(stderr, "Unable to find collection '%s'\n", name.c_str());
     return;
   }
-
-  printf("Loading scenario '%s'\n", name.c_str());
 
   std::vector<const Animation*> animations;
 
@@ -282,8 +315,7 @@ static void LoadScenario(const std::string& name) {
   }
 
   all_scenarios.push_back(new ScenarioStream());
-  RenderAnimations(animations, stream_creation_canvas,
-                   &all_scenarios.back()->content_stream);
+  all_scenarios.back()->animations = animations;
 
   printf("Finished loading scenario '%s'\n", name.c_str());
 }
