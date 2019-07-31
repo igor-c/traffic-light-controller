@@ -191,9 +191,11 @@ static void LoadAnimation(Collection* collection,
   animation.width = dst_frames[0].width();
   animation.height = dst_frames[0].height();
 
+  animation.frame_count = dst_frames.size();
+
   printf("Loaded '%s/%s' from '%s', frames=%d, size=%dx%d\n",
          collection->name.c_str(), name.c_str(), path.c_str(),
-         dst_frames.size(), animation.width, animation.height);
+         animation.frame_count, animation.width, animation.height);
 }
 
 Collection* FindCollection(const std::string& name) {
@@ -279,19 +281,29 @@ void CreateIntBasedCollection(const std::string& name,
 size_t GetMaxFrameCount(const std::vector<const Animation*>& animations) {
   size_t result = 0;
   for (const Animation* animation : animations) {
-    if (animation->frames.size() > result)
-      result = animation->frames.size();
+    if (animation->frame_count > result)
+      result = animation->frame_count;
   }
   return result;
 }
 
-bool RenderFrame(const std::vector<const Animation*>& animations,
-                 size_t frame_id,
+size_t GetMaxFrameCount(const std::vector<AnimationState>& animations) {
+  size_t result = 0;
+  for (const AnimationState& animation : animations) {
+    if (animation.animation->frame_count > result)
+      result = animation.animation->frame_count;
+  }
+  return result;
+}
+
+bool RenderFrame(const std::vector<AnimationState>& animations,
                  rgb_matrix::FrameCanvas* canvas) {
   for (size_t position = 0; position < animations.size(); ++position) {
-    const std::vector<Frame>& frames = animations[position]->frames;
-    const Frame& frame =
-        (frame_id < frames.size() ? frames[frame_id] : frames.back());
+    const AnimationState& animation_state = animations[position];
+    const Animation* animation = animation_state.animation;
+    const Frame& frame = (animation_state.cur_frame < animation->frame_count
+                              ? animation->frames[animation_state.cur_frame]
+                              : animation->frames.back());
 
     size_t frame_width = frame.width();
     size_t frame_height = frame.height();
@@ -303,7 +315,7 @@ bool RenderFrame(const std::vector<const Animation*>& animations,
           "Unexpected canvas size of %dx%d, frame size=%dx%d, position=%d, "
           "animation=%s\n",
           canvas->width(), canvas->height(), frame_width, frame_height,
-          position, animations[position]->name.c_str());
+          position, animation->name.c_str());
       return false;
     }
 

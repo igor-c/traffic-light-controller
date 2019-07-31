@@ -213,10 +213,9 @@ static void TryRunAnimationLoop() {
   ReadSocketAndExecuteCommands();
 
   uint64_t next_processing_time = GetTimeInMillis();
-  int frame_id = -1;
-  int frame_count = 0;
+  size_t max_frame_count = 0;
   int prev_scenario_idx = -1;
-  const std::vector<const Animation*>* animations = nullptr;
+  std::vector<AnimationState> animations;
   while (!should_interrupt_animation_loop) {
     uint64_t cur_time = GetTimeInMillis();
     if (next_processing_time > cur_time) {
@@ -231,47 +230,56 @@ static void TryRunAnimationLoop() {
     next_processing_time = cur_time + 100;
 
     if (current_scenario_idx != prev_scenario_idx) {
-      animations = nullptr;
-      frame_count = 0;
-      frame_id = -1;
+      animations.clear();
+      max_frame_count = 0;
       prev_scenario_idx = current_scenario_idx;
     }
 
     if (current_scenario_idx < 0) {
       // The animations have been disabled, erase all pointers.
-      animations = nullptr;
-      frame_count = 0;
-      frame_id = -1;
+      animations.clear();
+      max_frame_count = 0;
       continue;
     }
 
-    if (!animations) {
+    if (animations.empty()) {
       // Look up animation data if it's not active yet.
-      animations = &all_scenarios[current_scenario_idx]->animations;
-      frame_count = GetMaxFrameCount(*animations);
-      if (!frame_count) {
-        animations = nullptr;
+      for (const Animation* animation :
+           all_scenarios[current_scenario_idx]->animations) {
+        animations.emplace_back(animation);
+      }
+      max_frame_count = GetMaxFrameCount(animations);
+      if (!max_frame_count) {
+        animations.clear();
         continue;
       }
-      frame_id = 0;
-    }
-
-    if (frame_id == frame_count) {
-      // Animation has finished - start from the beginning.
-      frame_id = 0;
     }
 
     // Render the current frame, and advance.
     next_processing_time = cur_time + kHoldTimeMs;
 
     // offscreen_canvas->Clear();
-    if (!RenderFrame(*animations, frame_id, offscreen_canvas)) {
+    if (!RenderFrame(animations, offscreen_canvas)) {
       fprintf(stderr, "Failed to render, resetting scenario\n");
       current_scenario_idx = -1;
       continue;
     }
 
-    frame_id++;
+    for (AnimationState& animation : animations) {
+      animation.cur_frame++;
+      if (animation.cur_frame < animation.animation->frame_count)
+        continue;
+
+      if (animation.animation->frame_count > 200) {
+        // Sync all long animations, and make everyone's cur_frame
+        // go to zero once it reaches max_frame_count.
+        if (animation.cur_frame >= max_frame_count)
+          animation.cur_frame = 0;
+        continue;
+      }
+
+      animation.cur_frame = 0;
+    }
 
     offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, kVsyncMultiple);
 
@@ -451,7 +459,7 @@ int main(int argc, char* argv[]) {
   // CreateIntBasedScenario(std::vector<int>(demo_scenarios,
   //                                         demo_scenarios + 10));
 
-   LoadScenario("mitya");
+  LoadScenario("mitya");
   // LoadScenario("pac-man");
   // LoadScenario("ufo");
   current_scenario_idx = 0;

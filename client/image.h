@@ -50,8 +50,16 @@ struct Animation {
   std::vector<Frame> frames;
   size_t width = 0;
   size_t height = 0;
+  size_t frame_count = 0;
 
   Animation(const std::string& name) : name(name) {}
+};
+
+struct AnimationState {
+  const Animation* animation;
+  size_t cur_frame = 0;
+
+  AnimationState(const Animation* animation) : animation(animation) {}
 };
 
 struct Collection {
@@ -71,7 +79,7 @@ void CreateIntBasedCollection(const std::string& name,
                               const std::vector<int>& sequence_ids);
 
 size_t GetMaxFrameCount(const std::vector<const Animation*>& animations);
+size_t GetMaxFrameCount(const std::vector<AnimationState>& animations);
 
-bool RenderFrame(const std::vector<const Animation*>& animations,
-                 size_t frame_id,
+bool RenderFrame(const std::vector<AnimationState>& animations,
                  rgb_matrix::FrameCanvas* canvas);
