@@ -288,8 +288,8 @@ size_t GetMaxFrameCount(const std::vector<const Animation*>& animations) {
 bool RenderFrame(const std::vector<const Animation*>& animations,
                  size_t frame_id,
                  rgb_matrix::FrameCanvas* canvas) {
-  for (size_t i = 0; i < animations.size(); ++i) {
-    const std::vector<Frame>& frames = animations[i]->frames;
+  for (size_t position = 0; position < animations.size(); ++position) {
+    const std::vector<Frame>& frames = animations[position]->frames;
     const Frame& frame =
         (frame_id < frames.size() ? frames[frame_id] : frames.back());
 
@@ -297,17 +297,18 @@ bool RenderFrame(const std::vector<const Animation*>& animations,
     size_t frame_height = frame.height();
     size_t position_count = (size_t)canvas->width() / frame_width;
     if ((size_t)canvas->height() != frame_height ||
-        (size_t)canvas->width() % frame_width != 0 || i >= position_count) {
+        (size_t)canvas->width() % frame_width != 0 ||
+        position >= position_count) {
       printf(
-          "Unexpected canvas size of %dx%d, frame size=%dx%d, frame=%d, "
+          "Unexpected canvas size of %dx%d, frame size=%dx%d, position=%d, "
           "animation=%s\n",
-          canvas->width(), canvas->height(), frame_width, frame_height, i,
-          animations[i]->name.c_str());
+          canvas->width(), canvas->height(), frame_width, frame_height,
+          position, animations[position]->name.c_str());
       return false;
     }
 
     // Rendering starts from the end of the image, reverse positions.
-    size_t x_offset = (position_count - i - 1) * frame_width;
+    size_t x_offset = (position_count - position - 1) * frame_width;
 
     for (size_t y = 0; y < frame_height; ++y) {
       const uint8_t* c = frame.data() + y * frame.stride();

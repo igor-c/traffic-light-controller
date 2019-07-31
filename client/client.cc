@@ -307,6 +307,13 @@ static void LoadScenario(const std::string& name) {
     for (int i = 0; i < 8; ++i) {
       animations.push_back(green);
     }
+  } else if (collection->animations.size() > 1u) {
+    for (size_t i = 0; i < std::min(collection->animations.size(), 10u); ++i) {
+      animations.push_back(&collection->animations[i]);
+    }
+    for (size_t i = collection->animations.size(); i < 10; ++i) {
+      animations.push_back(&collection->animations[0]);
+    }
   } else {
     for (int i = 0; i < 10; ++i) {
       const Animation& animation = collection->animations[0];
@@ -380,11 +387,14 @@ int main(int argc, char* argv[]) {
   matrix_options.scan_mode = 0;
   matrix_options.multiplexing = 2;
   matrix_options.led_rgb_sequence = "BGR";
-  matrix_options.pwm_bits = 7;
   matrix_options.brightness = 70;
 
+  // Options to eliminate visual glitches and artifacts:
+  matrix_options.pwm_bits = 4;
+  matrix_options.pwm_lsb_nanoseconds = 300;
+  // matrix_options.pwm_dither_bits = 2;
   rgb_matrix::RuntimeOptions runtime_opt;
-  runtime_opt.gpio_slowdown = 2;
+  runtime_opt.gpio_slowdown = 4;
 
   int opt;
   while ((opt = getopt(argc, argv, "n:s:m:")) != -1) {
@@ -441,8 +451,9 @@ int main(int argc, char* argv[]) {
   // CreateIntBasedScenario(std::vector<int>(demo_scenarios,
   //                                         demo_scenarios + 10));
 
+   LoadScenario("mitya");
   // LoadScenario("pac-man");
-  LoadScenario("ufo");
+  // LoadScenario("ufo");
   current_scenario_idx = 0;
 
   fprintf(stderr, "Entering processing loop\n");
