@@ -247,6 +247,7 @@ static void TryRunAnimationLoop() {
       for (const Animation* animation :
            all_scenarios[current_scenario_idx]->animations) {
         animations.emplace_back(animation);
+        // animations.back().flip_vertical = true;
       }
       max_frame_count = GetMaxFrameCount(animations);
       if (!max_frame_count) {
@@ -459,9 +460,9 @@ int main(int argc, char* argv[]) {
   // CreateIntBasedScenario(std::vector<int>(demo_scenarios,
   //                                         demo_scenarios + 10));
 
-  LoadScenario("mitya");
+  // LoadScenario("mitya");
   // LoadScenario("pac-man");
-  // LoadScenario("ufo");
+  LoadScenario("ufo");
   current_scenario_idx = 0;
 
   fprintf(stderr, "Entering processing loop\n");

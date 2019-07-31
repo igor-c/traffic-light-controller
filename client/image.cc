@@ -126,25 +126,60 @@ static std::vector<std::string> GetDirList(const std::string& path,
   return result;
 }
 
-static void ConvertToFrame(const Magick::Image& src, Frame* dst) {
-  size_t width = src.columns();
-  size_t height = src.rows();
-  dst->SetSize(width, height);
+static inline void RotateCoordinates(size_t src_x,
+                                     size_t src_y,
+                                     size_t* dst_x,
+                                     size_t* dst_y,
+                                     int rotation,
+                                     bool flip_v,
+                                     bool flip_h) {
+  if (rotation == 90) {
+    *dst_y = src_x;
+    *dst_x = 31 - src_y;
+  } else if (rotation == 180) {
+    *dst_x = 31 - src_x;
+    *dst_y = 31 - src_y;
+  } else if (rotation == 270) {
+    *dst_y = 31 - src_x;
+    *dst_x = src_y;
+  } else {
+    *dst_x = src_x;
+    *dst_y = src_y;
+  }
 
-  const Magick::PixelPacket* pixels = src.getConstPixels(0, 0, width, height);
+  if (flip_v)
+    *dst_y = 31 - *dst_y;
+
+  if (flip_h)
+    *dst_x = 31 - *dst_x;
+}
+
+static void ConvertToFrame(const Magick::Image& src, Frame* dst) {
+  // Somehow, all our images have humans heads on the left,
+  // and so need to be rotated 90CW. We do it below.
+
+  size_t src_width = src.columns();
+  size_t src_height = src.rows();
+  dst->SetSize(src_height, src_width);  // Swap width/height due to rotation.
+
+  const Magick::PixelPacket* pixels =
+      src.getConstPixels(0, 0, src_width, src_height);
   // src.writePixels(Magick::QuantumType::RGBAQuantum, (unsigned char*)pixels);
 
   const Magick::PixelPacket* src_c = pixels;
-  uint8_t* dst_c = dst->data();
-  for (size_t y = 0; y < height; ++y) {
-    for (size_t x = 0; x < width; ++x) {
+  uint8_t* dst_pixels = dst->data();
+  for (size_t src_y = 0; src_y < src_height; ++src_y) {
+    for (size_t src_x = 0; src_x < src_width; ++src_x) {
+      size_t dst_x, dst_y;
+      RotateCoordinates(src_x, src_y, &dst_x, &dst_y, 90, false, false);
+      uint8_t* dst_c =
+          dst_pixels + dst_y * dst->stride() + dst_x * Frame::kPixelWidth;
       if (src_c->opacity < 256) {
         dst_c[0] = ScaleQuantumToChar(src_c->red);
         dst_c[1] = ScaleQuantumToChar(src_c->green);
         dst_c[2] = ScaleQuantumToChar(src_c->blue);
       }
       src_c += 1;
-      dst_c += Frame::kPixelWidth;
     }
   }
 }
@@ -296,38 +331,57 @@ size_t GetMaxFrameCount(const std::vector<AnimationState>& animations) {
   return result;
 }
 
+static bool RenderFrame(const AnimationState& animation_state,
+                        rgb_matrix::FrameCanvas* canvas,
+                        size_t x_offset) {
+  const Animation* animation = animation_state.animation;
+  const Frame& frame = (animation_state.cur_frame < animation->frame_count
+                            ? animation->frames[animation_state.cur_frame]
+                            : animation->frames.back());
+
+  int rotation = animation_state.rotation;
+  if (rotation < 0)
+    rotation += 360;
+
+  if (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270) {
+    printf("Unexpected rotation of %d, animation '%s'\n",
+           animation_state.rotation, animation->name.c_str());
+    return false;
+  }
+
+  bool flip_v = false;
+  bool flip_h = false;
+
+  for (size_t src_y = 0; src_y < 32; ++src_y) {
+    const uint8_t* c = frame.data() + src_y * frame.stride();
+    for (size_t src_x = 0; src_x < 32; ++src_x) {
+      size_t dst_x, dst_y;
+      RotateCoordinates(src_x, src_y, &dst_x, &dst_y, rotation, flip_v, flip_h);
+      canvas->SetPixel(dst_x + x_offset, dst_y, c[0], c[1], c[2]);
+      c += Frame::kPixelWidth;
+    }
+  }
+
+  return true;
+}
+
 bool RenderFrame(const std::vector<AnimationState>& animations,
                  rgb_matrix::FrameCanvas* canvas) {
+  int needed_width = animations.size() * 32;
+  if (canvas->height() != 32 || canvas->width() < needed_width ||
+      canvas->width() % 32 != 0) {
+    printf("Unexpected canvas size of %dx%d, animations=%d\n", canvas->width(),
+           canvas->height(), animations.size());
+    return false;
+  }
+
+  size_t position_count = (size_t)canvas->width() / 32;
   for (size_t position = 0; position < animations.size(); ++position) {
-    const AnimationState& animation_state = animations[position];
-    const Animation* animation = animation_state.animation;
-    const Frame& frame = (animation_state.cur_frame < animation->frame_count
-                              ? animation->frames[animation_state.cur_frame]
-                              : animation->frames.back());
-
-    size_t frame_width = frame.width();
-    size_t frame_height = frame.height();
-    size_t position_count = (size_t)canvas->width() / frame_width;
-    if ((size_t)canvas->height() != frame_height ||
-        (size_t)canvas->width() % frame_width != 0 ||
-        position >= position_count) {
-      printf(
-          "Unexpected canvas size of %dx%d, frame size=%dx%d, position=%d, "
-          "animation=%s\n",
-          canvas->width(), canvas->height(), frame_width, frame_height,
-          position, animation->name.c_str());
-      return false;
-    }
-
     // Rendering starts from the end of the image, reverse positions.
-    size_t x_offset = (position_count - position - 1) * frame_width;
-
-    for (size_t y = 0; y < frame_height; ++y) {
-      const uint8_t* c = frame.data() + y * frame.stride();
-      for (size_t x = 0; x < frame_width; ++x) {
-        canvas->SetPixel(x + x_offset, y, c[0], c[1], c[2]);
-        c += Frame::kPixelWidth;
-      }
+    size_t x_offset = (position_count - position - 1) * 32;
+    const AnimationState& animation_state = animations[position];
+    if (!RenderFrame(animation_state, canvas, x_offset)) {
+      return false;
     }
   }
 

@@ -58,6 +58,7 @@ struct Animation {
 struct AnimationState {
   const Animation* animation;
   size_t cur_frame = 0;
+  int rotation = 0;
 
   AnimationState(const Animation* animation) : animation(animation) {}
 };
