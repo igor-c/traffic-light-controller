@@ -59,6 +59,8 @@ struct AnimationState {
   const Animation* animation;
   size_t cur_frame = 0;
   int rotation = 0;
+  bool flip_v = false;
+  bool flip_h = false;
 
   AnimationState(const Animation* animation) : animation(animation) {}
 };
@@ -81,6 +83,8 @@ void CreateIntBasedCollection(const std::string& name,
 
 size_t GetMaxFrameCount(const std::vector<const Animation*>& animations);
 size_t GetMaxFrameCount(const std::vector<AnimationState>& animations);
+
+void SetRotations(const std::vector<int>& rotations);
 
 bool RenderFrame(const std::vector<AnimationState>& animations,
                  rgb_matrix::FrameCanvas* canvas);

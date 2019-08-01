@@ -14,6 +14,7 @@
 
 static const Frame* empty_frame = nullptr;
 static std::vector<Collection> all_collections;
+static std::vector<int> global_rotations;
 
 Frame::Frame(Frame&& src) {
   *this = std::move(src);
@@ -147,11 +148,21 @@ static inline void RotateCoordinates(size_t src_x,
     *dst_y = src_y;
   }
 
-  if (flip_v)
-    *dst_y = 31 - *dst_y;
+  if (flip_v) {
+    if (rotation == 0 || rotation == 180) {
+      *dst_y = 31 - *dst_y;
+    } else {
+      *dst_x = 31 - *dst_x;
+    }
+  }
 
-  if (flip_h)
-    *dst_x = 31 - *dst_x;
+  if (flip_h) {
+    if (rotation == 0 || rotation == 180) {
+      *dst_x = 31 - *dst_x;
+    } else {
+      *dst_y = 31 - *dst_y;
+    }
+  }
 }
 
 static void ConvertToFrame(const Magick::Image& src, Frame* dst) {
@@ -331,17 +342,26 @@ size_t GetMaxFrameCount(const std::vector<AnimationState>& animations) {
   return result;
 }
 
+void SetRotations(const std::vector<int>& rotations) {
+  global_rotations = rotations;
+}
+
 static bool RenderFrame(const AnimationState& animation_state,
                         rgb_matrix::FrameCanvas* canvas,
-                        size_t x_offset) {
+                        size_t x_offset,
+                        int rotation) {
   const Animation* animation = animation_state.animation;
   const Frame& frame = (animation_state.cur_frame < animation->frame_count
                             ? animation->frames[animation_state.cur_frame]
                             : animation->frames.back());
 
-  int rotation = animation_state.rotation;
-  if (rotation < 0)
+  rotation += animation_state.rotation;
+  while (rotation < 0) {
     rotation += 360;
+  }
+  while (rotation >= 360) {
+    rotation -= 360;
+  }
 
   if (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270) {
     printf("Unexpected rotation of %d, animation '%s'\n",
@@ -349,8 +369,8 @@ static bool RenderFrame(const AnimationState& animation_state,
     return false;
   }
 
-  bool flip_v = false;
-  bool flip_h = false;
+  bool flip_v = animation_state.flip_v;
+  bool flip_h = animation_state.flip_h;
 
   for (size_t src_y = 0; src_y < 32; ++src_y) {
     const uint8_t* c = frame.data() + src_y * frame.stride();
@@ -379,8 +399,10 @@ bool RenderFrame(const std::vector<AnimationState>& animations,
   for (size_t position = 0; position < animations.size(); ++position) {
     // Rendering starts from the end of the image, reverse positions.
     size_t x_offset = (position_count - position - 1) * 32;
+    int rotation =
+        (position < global_rotations.size() ? global_rotations[position] : 0);
     const AnimationState& animation_state = animations[position];
-    if (!RenderFrame(animation_state, canvas, x_offset)) {
+    if (!RenderFrame(animation_state, canvas, x_offset, rotation)) {
       return false;
     }
   }

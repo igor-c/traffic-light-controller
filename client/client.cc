@@ -247,7 +247,7 @@ static void TryRunAnimationLoop() {
       for (const Animation* animation :
            all_scenarios[current_scenario_idx]->animations) {
         animations.emplace_back(animation);
-        // animations.back().flip_vertical = true;
+        // animations.back().flip_v = true;
       }
       max_frame_count = GetMaxFrameCount(animations);
       if (!max_frame_count) {
@@ -444,6 +444,8 @@ int main(int argc, char* argv[]) {
   SetupUnicornPins();
 
   InitImages();
+
+  SetRotations(std::vector<int>({-90, -90, -90, -90, -90, 90, 90, 90, 90, 90}));
 
   matrix = CreateMatrixFromOptions(matrix_options, runtime_opt);
   if (matrix == NULL) {
