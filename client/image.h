@@ -56,12 +56,21 @@ struct Animation {
 };
 
 struct AnimationState {
-  const Animation* animation;
+  const Animation* animation = nullptr;
   size_t cur_frame = 0;
   int rotation = 0;
   bool flip_v = false;
   bool flip_h = false;
 
+  // If true, starts showing again right after it ends.
+  // If false, freezes upon reaching the end.
+  bool is_cyclic = false;
+
+  size_t frame_count() const {
+    return (animation ? animation->frame_count : 0);
+  }
+
+  AnimationState() = default;
   AnimationState(const Animation* animation) : animation(animation) {}
 };
 
@@ -81,10 +90,15 @@ void InitImages();
 void CreateIntBasedCollection(const std::string& name,
                               const std::vector<int>& sequence_ids);
 
+AnimationState GetSolidBlack();
+AnimationState GetSolidRed();
+AnimationState GetSolidYellow();
+AnimationState GetSolidGreen();
+
 size_t GetMaxFrameCount(const std::vector<const Animation*>& animations);
 size_t GetMaxFrameCount(const std::vector<AnimationState>& animations);
 
 void SetRotations(const std::vector<int>& rotations);
 
-bool RenderFrame(const std::vector<AnimationState>& animations,
+bool RenderFrame(const std::vector<AnimationState*>& animations,
                  rgb_matrix::FrameCanvas* canvas);

@@ -244,6 +244,35 @@ static void LoadAnimation(Collection* collection,
          animation.frame_count, animation.width, animation.height);
 }
 
+static Animation* CreateSolidAnimation(uint8_t r, uint8_t g, uint8_t b) {
+  Animation* animation = new Animation("solid_color");
+  animation->width = 32;
+  animation->height = 32;
+  animation->frame_count = 1;
+  animation->frames.emplace_back(32, 32, r, g, b);
+  return animation;
+}
+
+AnimationState GetSolidBlack() {
+  static const Animation* animation = CreateSolidAnimation(0, 0, 0);
+  return AnimationState(animation);
+}
+
+AnimationState GetSolidRed() {
+  static const Animation* animation = CreateSolidAnimation(255, 0, 0);
+  return AnimationState(animation);
+}
+
+AnimationState GetSolidYellow() {
+  static const Animation* animation = CreateSolidAnimation(0, 0, 255);
+  return AnimationState(animation);
+}
+
+AnimationState GetSolidGreen() {
+  static const Animation* animation = CreateSolidAnimation(0, 255, 0);
+  return AnimationState(animation);
+}
+
 Collection* FindCollection(const std::string& name) {
   for (auto& item : all_collections) {
     if (item.name == name)
@@ -336,8 +365,8 @@ size_t GetMaxFrameCount(const std::vector<const Animation*>& animations) {
 size_t GetMaxFrameCount(const std::vector<AnimationState>& animations) {
   size_t result = 0;
   for (const AnimationState& animation : animations) {
-    if (animation.animation->frame_count > result)
-      result = animation.animation->frame_count;
+    if (animation.frame_count() > result)
+      result = animation.frame_count();
   }
   return result;
 }
@@ -346,14 +375,24 @@ void SetRotations(const std::vector<int>& rotations) {
   global_rotations = rotations;
 }
 
-static bool RenderFrame(const AnimationState& animation_state,
+static bool RenderFrame(AnimationState animation_state,
                         rgb_matrix::FrameCanvas* canvas,
                         size_t x_offset,
                         int rotation) {
+  if (!animation_state.animation) {
+    animation_state = GetSolidBlack();
+  }
+
   const Animation* animation = animation_state.animation;
-  const Frame& frame = (animation_state.cur_frame < animation->frame_count
-                            ? animation->frames[animation_state.cur_frame]
-                            : animation->frames.back());
+
+  size_t frame_id = animation_state.cur_frame;
+  if (frame_id >= animation->frame_count) {
+    if (animation_state.is_cyclic) {
+      frame_id %= animation->frame_count;
+    } else {
+      frame_id = animation->frame_count - 1;
+    }
+  }
 
   rotation += animation_state.rotation;
   while (rotation < 0) {
@@ -372,6 +411,7 @@ static bool RenderFrame(const AnimationState& animation_state,
   bool flip_v = animation_state.flip_v;
   bool flip_h = animation_state.flip_h;
 
+  const Frame& frame = animation->frames[frame_id];
   for (size_t src_y = 0; src_y < 32; ++src_y) {
     const uint8_t* c = frame.data() + src_y * frame.stride();
     for (size_t src_x = 0; src_x < 32; ++src_x) {
@@ -385,7 +425,7 @@ static bool RenderFrame(const AnimationState& animation_state,
   return true;
 }
 
-bool RenderFrame(const std::vector<AnimationState>& animations,
+bool RenderFrame(const std::vector<AnimationState*>& animations,
                  rgb_matrix::FrameCanvas* canvas) {
   int needed_width = animations.size() * 32;
   if (canvas->height() != 32 || canvas->width() < needed_width ||
@@ -401,8 +441,8 @@ bool RenderFrame(const std::vector<AnimationState>& animations,
     size_t x_offset = (position_count - position - 1) * 32;
     int rotation =
         (position < global_rotations.size() ? global_rotations[position] : 0);
-    const AnimationState& animation_state = animations[position];
-    if (!RenderFrame(animation_state, canvas, x_offset, rotation)) {
+    const AnimationState* animation_state = animations[position];
+    if (!RenderFrame(*animation_state, canvas, x_offset, rotation)) {
       return false;
     }
   }

@@ -25,13 +25,34 @@
 #include "network.h"
 #include "pixel-mapper.h"
 
-constexpr int kVsyncMultiple = 1;
-
-struct ScenarioStream {
-  std::vector<const Animation*> animations;
-  std::vector<bool> UnicolLightL[5];
-  std::vector<bool> UnicolLightR[5];
+enum class TransportMode {
+  NORMAL,
+  TRIPPY,
 };
+
+struct Scenario {
+  TransportMode transport_mode;
+  AnimationState pedestrian_red;
+  AnimationState pedestrian_green;
+  bool is_trippy;
+
+  Scenario(TransportMode transport_mode) : transport_mode(transport_mode) {}
+};
+
+// TODO(igorc): Implement blinking transport light.
+static constexpr uint64_t kRedGreenLightTimeMs = 4 * 1000;
+static constexpr uint64_t kYellowLightTimeMs = 2 * 1000;
+// static constexpr uint64_t kTransportCycleTimeMs =
+//     kRedGreenLightTimeMs * 2 + kYellowLightTimeMs;
+
+// Scenario-related controls:
+static std::vector<AnimationState> trippy_set;
+static std::vector<Scenario> all_scenarios;
+static uint64_t transport_anchor_time_ms = 0;
+// static int traffic_light_id = 0;
+static const Scenario* scenario_main = nullptr;
+static const Scenario* scenario_secondary = nullptr;
+static bool is_traffic_light_started = false;
 
 class UserTCPprotocol {
  public:
@@ -57,11 +78,6 @@ class UserTCPprotocol {
 #define UniconLight2 27
 #define CM_ON 1
 #define CM_OFF 0
-
-// Scenario-related controls:
-static std::vector<ScenarioStream*> all_scenarios;
-static int current_scenario_idx = -1;
-static bool is_traffic_light_started = false;
 
 static rgb_matrix::RGBMatrix* matrix;
 static rgb_matrix::FrameCanvas* stream_creation_canvas = nullptr;
@@ -180,10 +196,10 @@ void DoCmd(uint8_t* data) {
       should_interrupt_animation_loop = true;
     } else if (data[2] ==
                static_cast<int>(UserTCPprotocol::Scenario::NEXTCOMBO)) {
-      if (data[3] < all_scenarios.size()) {
-        current_scenario_idx = data[3];
-        should_interrupt_animation_loop = true;
-      }
+      // if (data[3] < all_scenarios.size()) {
+      //   current_scenario_idx = data[3];
+      //   should_interrupt_animation_loop = true;
+      // }
     }
   }
 }
@@ -203,6 +219,150 @@ static void InterruptHandler(int signo) {
   should_interrupt_animation_loop = true;
 }
 
+/*static bool IsMainRoadFacing() {
+  return (traffic_light_id % 2 == 0);
+}*/
+
+// Note that colors refers to those shown along the main road.
+enum class LightStage {
+  NOT_STARTED,
+  RED,
+  YELLOW,
+  GREEN,
+  PEDESTRIAN,
+};
+
+static LightStage GetLightStage(uint64_t cur_time) {
+  if (transport_anchor_time_ms > cur_time) {
+    transport_anchor_time_ms = cur_time;
+  }
+
+  uint64_t rel_time = cur_time - transport_anchor_time_ms;
+  if (rel_time < kRedGreenLightTimeMs) {
+    return LightStage::RED;
+  } else if (rel_time < kRedGreenLightTimeMs + kYellowLightTimeMs) {
+    return LightStage::YELLOW;
+  } else if (rel_time < kRedGreenLightTimeMs * 2 + kYellowLightTimeMs) {
+    return LightStage::GREEN;
+  } else {
+    return LightStage::PEDESTRIAN;
+  }
+}
+
+struct LightAnimations {
+  AnimationState traffic_red_main;
+  AnimationState traffic_yellow_main;
+  AnimationState traffic_green_main;
+  AnimationState ped_red_main;
+  AnimationState ped_green_main;
+  AnimationState traffic_red_second;
+  AnimationState traffic_yellow_second;
+  AnimationState traffic_green_second;
+  AnimationState ped_red_second;
+  AnimationState ped_green_second;
+
+  size_t max_ped_frame_count;
+};
+
+static void FinalizeLightAnimations(LightAnimations* lights) {
+  size_t m1 = lights->ped_red_main.frame_count();
+  size_t m2 = lights->ped_red_second.frame_count();
+  size_t m3 = lights->ped_green_main.frame_count();
+  size_t m4 = lights->ped_green_second.frame_count();
+  lights->max_ped_frame_count = std::max(std::max(m1, m2), std::max(m3, m4));
+}
+
+static std::vector<AnimationState*> GetRenderSequence(LightAnimations* lights) {
+  std::vector<AnimationState*> result(10, nullptr);
+  result[0] = &lights->ped_green_main;
+  result[1] = &lights->ped_red_main;
+  result[2] = &lights->traffic_green_main;
+  result[3] = &lights->traffic_yellow_main;
+  result[4] = &lights->traffic_red_main;
+  result[5] = &lights->traffic_red_second;
+  result[6] = &lights->traffic_yellow_second;
+  result[7] = &lights->traffic_green_second;
+  result[8] = &lights->ped_red_second;
+  result[9] = &lights->ped_green_second;
+  return result;
+}
+
+static LightAnimations GetRedStateAnimations() {
+  LightAnimations result;
+  result.traffic_red_main = GetSolidRed();
+  result.traffic_green_second = GetSolidGreen();
+  result.ped_red_main = GetSolidRed();
+  result.ped_red_second = GetSolidRed();
+  FinalizeLightAnimations(&result);
+  return result;
+}
+
+static LightAnimations GetYellowStateAnimations() {
+  LightAnimations result;
+  result.traffic_yellow_main = GetSolidYellow();
+  result.traffic_yellow_second = GetSolidYellow();
+  result.ped_red_main = GetSolidRed();
+  result.ped_red_second = GetSolidRed();
+  FinalizeLightAnimations(&result);
+  return result;
+}
+
+static LightAnimations GetGreenStateAnimations() {
+  LightAnimations result;
+  result.traffic_green_main = GetSolidGreen();
+  result.traffic_red_second = GetSolidRed();
+  result.ped_red_main = GetSolidRed();
+  result.ped_red_second = GetSolidRed();
+  FinalizeLightAnimations(&result);
+  return result;
+}
+
+static LightAnimations GetPedestrianStateAnimations() {
+  if (scenario_main && !scenario_secondary) {
+    scenario_secondary = scenario_main;
+  }
+  if (scenario_secondary && !scenario_main) {
+    scenario_main = scenario_secondary;
+  }
+
+  if (scenario_main->is_trippy && !scenario_secondary->is_trippy) {
+    scenario_secondary = scenario_main;
+  }
+  if (scenario_secondary->is_trippy && !scenario_main->is_trippy) {
+    scenario_main = scenario_secondary;
+  }
+
+  LightAnimations result;
+  if (scenario_main) {
+    result.ped_red_main = scenario_main->pedestrian_red;
+    result.ped_green_main = scenario_main->pedestrian_green;
+  } else if (scenario_secondary) {
+    result.ped_red_second = scenario_secondary->pedestrian_red;
+    result.ped_green_second = scenario_secondary->pedestrian_green;
+  } else {
+    result.ped_green_main = GetSolidGreen();
+    result.ped_green_second = GetSolidGreen();
+  }
+
+  FinalizeLightAnimations(&result);
+  return result;
+}
+
+static bool RenderLightAnimations(LightAnimations* lights,
+                                  rgb_matrix::FrameCanvas* canvas) {
+  std::vector<AnimationState*> render_sequence = GetRenderSequence(lights);
+
+  if (!RenderFrame(render_sequence, canvas)) {
+    return false;
+  }
+
+  for (AnimationState* animation : render_sequence) {
+    animation->cur_frame++;
+  }
+
+  return true;
+}
+
 static void TryRunAnimationLoop() {
   static rgb_matrix::FrameCanvas* offscreen_canvas = nullptr;
   if (!offscreen_canvas)
@@ -213,9 +373,9 @@ static void TryRunAnimationLoop() {
   ReadSocketAndExecuteCommands();
 
   uint64_t next_processing_time = GetTimeInMillis();
-  size_t max_frame_count = 0;
-  int prev_scenario_idx = -1;
-  std::vector<AnimationState> animations;
+  LightStage prev_stage = LightStage::NOT_STARTED;
+  size_t ped_frames_shown = 0;
+  LightAnimations current_lights;
   while (!should_interrupt_animation_loop) {
     uint64_t cur_time = GetTimeInMillis();
     if (next_processing_time > cur_time) {
@@ -225,63 +385,59 @@ static void TryRunAnimationLoop() {
       continue;
     }
 
-    // Just in case there's an early "continue", force the caller
-    // to offload CPU since TCP read is non-blocking.
-    next_processing_time = cur_time + 100;
-
-    if (current_scenario_idx != prev_scenario_idx) {
-      animations.clear();
-      max_frame_count = 0;
-      prev_scenario_idx = current_scenario_idx;
-    }
-
-    if (current_scenario_idx < 0) {
-      // The animations have been disabled, erase all pointers.
-      animations.clear();
-      max_frame_count = 0;
-      continue;
-    }
-
-    if (animations.empty()) {
-      // Look up animation data if it's not active yet.
-      for (const Animation* animation :
-           all_scenarios[current_scenario_idx]->animations) {
-        animations.emplace_back(animation);
-        // animations.back().flip_v = true;
-      }
-      max_frame_count = GetMaxFrameCount(animations);
-      if (!max_frame_count) {
-        animations.clear();
-        continue;
-      }
-    }
-
     // Render the current frame, and advance.
     next_processing_time = cur_time + kHoldTimeMs;
 
+    if (prev_stage == LightStage::PEDESTRIAN &&
+        ped_frames_shown >= current_lights.max_ped_frame_count) {
+      // We have just finished showing pedestrian's animations.
+      // Start full cycle again.
+      transport_anchor_time_ms = cur_time;
+    }
+
+    LightStage stage = GetLightStage(cur_time);
+    if (stage != prev_stage) {
+      switch (stage) {
+        case LightStage::RED:
+          current_lights = GetRedStateAnimations();
+          printf("Switching to RED light\n");
+          break;
+        case LightStage::YELLOW:
+          current_lights = GetYellowStateAnimations();
+          printf("Switching to YELLOW light\n");
+          break;
+        case LightStage::GREEN:
+          current_lights = GetGreenStateAnimations();
+          printf("Switching to GREEN light\n");
+          break;
+        case LightStage::PEDESTRIAN:
+        default:
+          printf("Switching to PEDESTRIAN light\n");
+          current_lights = GetPedestrianStateAnimations();
+          if (current_lights.max_ped_frame_count == 1) {
+            // For whatever reason - we have no animation running.
+            // Just keep the colors for the regular interval.
+            current_lights.max_ped_frame_count = 236;
+          }
+          break;
+      }
+
+      prev_stage = stage;
+      ped_frames_shown = 0;
+    }
+
     // offscreen_canvas->Clear();
-    if (!RenderFrame(animations, offscreen_canvas)) {
-      fprintf(stderr, "Failed to render, resetting scenario\n");
-      current_scenario_idx = -1;
+    if (!RenderLightAnimations(&current_lights, offscreen_canvas)) {
+      fprintf(stderr, "Failed to render, resetting current scenarios\n");
+      scenario_main = nullptr;
+      scenario_secondary = nullptr;
+      ped_frames_shown = current_lights.max_ped_frame_count;
       continue;
     }
 
-    for (AnimationState& animation : animations) {
-      animation.cur_frame++;
-      if (animation.cur_frame < animation.animation->frame_count)
-        continue;
+    ped_frames_shown++;
 
-      if (animation.animation->frame_count > 200) {
-        // Sync all long animations, and make everyone's cur_frame
-        // go to zero once it reaches max_frame_count.
-        if (animation.cur_frame >= max_frame_count)
-          animation.cur_frame = 0;
-        continue;
-      }
-
-      animation.cur_frame = 0;
-    }
-
+    static constexpr int kVsyncMultiple = 1;
     offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, kVsyncMultiple);
 
     // digitalWrite(UniconLight0, scenario->UnicolLightL[0].at(seqInd));
@@ -290,50 +446,76 @@ static void TryRunAnimationLoop() {
   }
 
   if (!is_traffic_light_started) {
-    current_scenario_idx = -1;
-    for (auto* scenario : all_scenarios) {
-      delete scenario;
-    }
-    all_scenarios.clear();
+    scenario_main = nullptr;
+    scenario_secondary = nullptr;
     matrix->Clear();
   }
 }
 
-static void LoadScenario(const std::string& name) {
+static void LoadScenario(const std::string& name,
+                         TransportMode transport_mode) {
   Collection* collection = FindCollection(name);
   if (!collection) {
     fprintf(stderr, "Unable to find collection '%s'\n", name.c_str());
     return;
   }
 
-  std::vector<const Animation*> animations;
+  size_t animation_count = collection->animations.size();
+  printf("Loading scenario '%s' with %d animations\n", name.c_str(),
+         animation_count);
 
   const Animation* red = collection->FindAnimation("red");
   const Animation* green = collection->FindAnimation("green");
-  if (red && green) {
-    animations.push_back(green);
-    animations.push_back(red);
-    for (int i = 0; i < 8; ++i) {
-      animations.push_back(green);
-    }
-  } else if (collection->animations.size() > 1u) {
-    for (size_t i = 0; i < std::min(collection->animations.size(), 10u); ++i) {
-      animations.push_back(&collection->animations[i]);
-    }
-    for (size_t i = collection->animations.size(); i < 10; ++i) {
-      animations.push_back(&collection->animations[0]);
-    }
-  } else {
-    for (int i = 0; i < 10; ++i) {
-      const Animation& animation = collection->animations[0];
-      animations.push_back(&animation);
-    }
+
+  Scenario scenario(transport_mode);
+  if (red) {
+    scenario.pedestrian_red = AnimationState(red);
   }
 
-  all_scenarios.push_back(new ScenarioStream());
-  all_scenarios.back()->animations = animations;
+  if (green) {
+    scenario.pedestrian_green = AnimationState(green);
+  }
 
-  printf("Finished loading scenario '%s'\n", name.c_str());
+  if (red && green) {
+    if (animation_count != 2u) {
+      fprintf(stderr, "Unexpected # of animations in '%s'\n", name.c_str());
+    }
+    all_scenarios.push_back(scenario);
+    return;
+  }
+
+  if (red || green) {
+    if (animation_count != 1u) {
+      fprintf(stderr, "Unexpected # of animations in '%s'\n", name.c_str());
+    }
+    if (red) {
+      scenario.pedestrian_green = scenario.pedestrian_red;
+      scenario.pedestrian_green.flip_h = true;
+    } else {
+      scenario.pedestrian_red = scenario.pedestrian_green;
+      scenario.pedestrian_red.flip_h = true;
+    }
+    all_scenarios.push_back(scenario);
+    return;
+  }
+
+  fprintf(stderr, "Unexpected animation set in '%s'\n", name.c_str());
+}
+
+static std::vector<AnimationState> LoadAnimationSet(const std::string& name) {
+  std::vector<AnimationState> result;
+  Collection* collection = FindCollection(name);
+  if (!collection) {
+    fprintf(stderr, "Unable to find collection '%s'\n", name.c_str());
+    return result;
+  }
+
+  for (size_t i = 0; i < collection->animations.size(); ++i) {
+    AnimationState state(&collection->animations[i]);
+    result.push_back(state);
+  }
+
+  return result;
 }
 
 static void SetupUnicornPins() {
@@ -348,6 +530,32 @@ static void SetupUnicornPins() {
   digitalWrite(UniconLight0, CM_OFF);
   digitalWrite(UniconLight1, CM_OFF);
   digitalWrite(UniconLight2, CM_OFF);
+}
+
+static void SetupScenarios() {
+  transport_anchor_time_ms = GetTimeInMillis();
+
+  trippy_set = LoadAnimationSet("mitya");
+
+  // static const int demo_scenarios[] = {7, 8, 7, 8, 7, 8, 7, 8, 7, 8};
+  // CreateIntBasedScenario(std::vector<int>(demo_scenarios,
+  //                                         demo_scenarios + 10));
+
+  LoadScenario("bike", TransportMode::NORMAL);
+  LoadScenario("burning", TransportMode::NORMAL);
+  // LoadScenario("dance", TransportMode::NORMAL);
+  LoadScenario("hug", TransportMode::NORMAL);
+  LoadScenario("lsd", TransportMode::TRIPPY);
+  LoadScenario("meditation", TransportMode::NORMAL);
+  LoadScenario("pac-man", TransportMode::NORMAL);
+  // LoadScenario("party", TransportMode::FULL);
+  LoadScenario("pray", TransportMode::NORMAL);
+  LoadScenario("rastaman", TransportMode::NORMAL);
+  LoadScenario("recursion", TransportMode::NORMAL);
+  // LoadScenario("sex", TransportMode::NORMAL);
+  LoadScenario("ufo", TransportMode::NORMAL);
+
+  scenario_main = &all_scenarios[0];
 }
 
 //
@@ -443,9 +651,10 @@ int main(int argc, char* argv[]) {
 
   SetupUnicornPins();
 
+  SetRotations(std::vector<int>({-90, -90, -90, -90, -90, 90, 90, 90, 90, 90}));
   InitImages();
 
-  SetRotations(std::vector<int>({-90, -90, -90, -90, -90, 90, 90, 90, 90, 90}));
+  SetupScenarios();
 
   matrix = CreateMatrixFromOptions(matrix_options, runtime_opt);
   if (matrix == NULL) {
@@ -457,15 +666,6 @@ int main(int argc, char* argv[]) {
   // signal(SIGTERM, InterruptHandler);
   // signal(SIGINT, InterruptHandler);
   signal(SIGTSTP, InterruptHandler);
-
-  // static const int demo_scenarios[] = {7, 8, 7, 8, 7, 8, 7, 8, 7, 8};
-  // CreateIntBasedScenario(std::vector<int>(demo_scenarios,
-  //                                         demo_scenarios + 10));
-
-  // LoadScenario("mitya");
-  // LoadScenario("pac-man");
-  LoadScenario("ufo");
-  current_scenario_idx = 0;
 
   fprintf(stderr, "Entering processing loop\n");
 
