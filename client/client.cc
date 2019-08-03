@@ -40,13 +40,12 @@ struct Scenario {
 };
 
 // TODO(igorc): Implement blinking transport light.
-static constexpr uint64_t kRedGreenLightTimeMs = 4 * 1000;
-static constexpr uint64_t kYellowLightTimeMs = 2 * 1000;
-// static constexpr uint64_t kTransportCycleTimeMs =
-//     kRedGreenLightTimeMs * 2 + kYellowLightTimeMs;
+static constexpr uint64_t kRedGreenLightTimeMs = 2 * 1000;
+static constexpr uint64_t kYellowLightTimeMs = 1 * 1000;
 
 // Scenario-related controls:
 static std::vector<AnimationState> trippy_set;
+static AnimationState ped_red_light_animation;
 static std::vector<Scenario> all_scenarios;
 static uint64_t transport_anchor_time_ms = 0;
 // static int traffic_light_id = 0;
@@ -291,8 +290,8 @@ static LightAnimations GetRedStateAnimations() {
   LightAnimations result;
   result.traffic_red_main = GetSolidRed();
   result.traffic_green_second = GetSolidGreen();
-  result.ped_red_main = GetSolidRed();
-  result.ped_red_second = GetSolidRed();
+  result.ped_red_main = ped_red_light_animation;
+  result.ped_red_second = ped_red_light_animation;
   FinalizeLightAnimations(&result);
   return result;
 }
@@ -301,8 +300,8 @@ static LightAnimations GetYellowStateAnimations() {
   LightAnimations result;
   result.traffic_yellow_main = GetSolidYellow();
   result.traffic_yellow_second = GetSolidYellow();
-  result.ped_red_main = GetSolidRed();
-  result.ped_red_second = GetSolidRed();
+  result.ped_red_main = ped_red_light_animation;
+  result.ped_red_second = ped_red_light_animation;
   FinalizeLightAnimations(&result);
   return result;
 }
@@ -311,8 +310,8 @@ static LightAnimations GetGreenStateAnimations() {
   LightAnimations result;
   result.traffic_green_main = GetSolidGreen();
   result.traffic_red_second = GetSolidRed();
-  result.ped_red_main = GetSolidRed();
-  result.ped_red_second = GetSolidRed();
+  result.ped_red_main = ped_red_light_animation;
+  result.ped_red_second = ped_red_light_animation;
   FinalizeLightAnimations(&result);
   return result;
 }
@@ -554,6 +553,18 @@ static void SetupScenarios() {
   LoadScenario("recursion", TransportMode::NORMAL);
   // LoadScenario("sex", TransportMode::NORMAL);
   LoadScenario("ufo", TransportMode::NORMAL);
+
+  ped_red_light_animation = GetSolidRed();
+
+  Collection* still_images = FindCollection("still");
+  if (still_images) {
+    const Animation* animation = still_images->FindAnimation("stop_cat");
+    if (animation) {
+      ped_red_light_animation = AnimationState(animation);
+      ped_red_light_animation.rotation = -90;
+      printf("Using stop_cat.gif for pedestrians\n");
+    }
+  }
 
   scenario_main = &all_scenarios[0];
 }
