@@ -32,8 +32,13 @@ enum class TransportMode {
 
 struct Scenario {
   TransportMode transport_mode;
-  AnimationState pedestrian_red;
-  AnimationState pedestrian_green;
+  AnimationState pedestrian_up_going;
+  AnimationState pedestrian_down_going;
+  AnimationState pedestrian_up_stopped;
+  AnimationState pedestrian_down_stopped;
+  AnimationState traffic_up;
+  AnimationState traffic_middle;
+  AnimationState traffic_down;
   bool is_trippy;
 
   Scenario(TransportMode transport_mode) : transport_mode(transport_mode) {}
@@ -249,74 +254,105 @@ static LightStage GetLightStage(uint64_t cur_time) {
 }
 
 struct LightAnimations {
-  AnimationState traffic_red_main;
-  AnimationState traffic_yellow_main;
-  AnimationState traffic_green_main;
-  AnimationState ped_red_main;
-  AnimationState ped_green_main;
-  AnimationState traffic_red_second;
-  AnimationState traffic_yellow_second;
-  AnimationState traffic_green_second;
-  AnimationState ped_red_second;
-  AnimationState ped_green_second;
+  AnimationState side1_traffic_up;
+  AnimationState side1_traffic_middle;
+  AnimationState side1_traffic_down;
+  AnimationState side1_pedestrian_up;
+  AnimationState side1_pedestrian_down;
+  AnimationState side2_traffic_up;
+  AnimationState side2_traffic_middle;
+  AnimationState side2_traffic_down;
+  AnimationState side2_pedestrian_up;
+  AnimationState side2_pedestrian_down;
 
-  size_t max_ped_frame_count;
+  bool has_future_pedestrian = false;
+  AnimationState future_pedestrian_up;
+  AnimationState future_pedestrian_down;
+
+  size_t max_pedestrian_frame_count;
 };
 
 static void FinalizeLightAnimations(LightAnimations* lights) {
-  size_t m1 = lights->ped_red_main.frame_count();
-  size_t m2 = lights->ped_red_second.frame_count();
-  size_t m3 = lights->ped_green_main.frame_count();
-  size_t m4 = lights->ped_green_second.frame_count();
-  lights->max_ped_frame_count = std::max(std::max(m1, m2), std::max(m3, m4));
+  size_t m1 = lights->side1_pedestrian_up.frame_count();
+  size_t m2 = lights->side2_pedestrian_up.frame_count();
+  size_t m3 = lights->side1_pedestrian_down.frame_count();
+  size_t m4 = lights->side2_pedestrian_down.frame_count();
+  lights->max_pedestrian_frame_count =
+      std::max(std::max(m1, m2), std::max(m3, m4));
 }
 
 static std::vector<AnimationState*> GetRenderSequence(LightAnimations* lights) {
   std::vector<AnimationState*> result(10, nullptr);
-  result[0] = &lights->ped_green_main;
-  result[1] = &lights->ped_red_main;
-  result[2] = &lights->traffic_green_main;
-  result[3] = &lights->traffic_yellow_main;
-  result[4] = &lights->traffic_red_main;
-  result[5] = &lights->traffic_red_second;
-  result[6] = &lights->traffic_yellow_second;
-  result[7] = &lights->traffic_green_second;
-  result[8] = &lights->ped_red_second;
-  result[9] = &lights->ped_green_second;
+  result[0] = &lights->side1_pedestrian_down;
+  result[1] = &lights->side1_pedestrian_up;
+  result[2] = &lights->side1_traffic_down;
+  result[3] = &lights->side1_traffic_middle;
+  result[4] = &lights->side1_traffic_up;
+  result[5] = &lights->side2_traffic_up;
+  result[6] = &lights->side2_traffic_middle;
+  result[7] = &lights->side2_traffic_down;
+  result[8] = &lights->side2_pedestrian_up;
+  result[9] = &lights->side2_pedestrian_down;
   return result;
 }
 
-static LightAnimations GetRedStateAnimations() {
+static void ApplyFuturePedestrian(LightAnimations* dst,
+                                  const LightAnimations& prev_ped_lights) {
+  if (prev_ped_lights.has_future_pedestrian) {
+    dst->side1_pedestrian_up = prev_ped_lights.future_pedestrian_up;
+    dst->side1_pedestrian_down = prev_ped_lights.future_pedestrian_down;
+    dst->side2_pedestrian_up = prev_ped_lights.future_pedestrian_up;
+    dst->side2_pedestrian_down = prev_ped_lights.future_pedestrian_down;
+  }
+}
+
+static LightAnimations GetRedStateAnimations(
+    const LightAnimations& prev_ped_lights) {
   LightAnimations result;
-  result.traffic_red_main = GetSolidRed();
-  result.traffic_green_second = GetSolidGreen();
-  result.ped_red_main = ped_red_light_animation;
-  result.ped_red_second = ped_red_light_animation;
+  result.side1_traffic_up = GetSolidRed();
+  result.side2_traffic_down = GetSolidGreen();
+  result.side1_pedestrian_up = ped_red_light_animation;
+  result.side2_pedestrian_up = ped_red_light_animation;
+  ApplyFuturePedestrian(&result, prev_ped_lights);
   FinalizeLightAnimations(&result);
   return result;
 }
 
-static LightAnimations GetYellowStateAnimations() {
+static LightAnimations GetYellowStateAnimations(
+    const LightAnimations& prev_ped_lights) {
   LightAnimations result;
-  result.traffic_yellow_main = GetSolidYellow();
-  result.traffic_yellow_second = GetSolidYellow();
-  result.ped_red_main = ped_red_light_animation;
-  result.ped_red_second = ped_red_light_animation;
+  result.side1_traffic_middle = GetSolidYellow();
+  result.side2_traffic_middle = GetSolidYellow();
+  result.side1_pedestrian_up = ped_red_light_animation;
+  result.side2_pedestrian_up = ped_red_light_animation;
+  ApplyFuturePedestrian(&result, prev_ped_lights);
   FinalizeLightAnimations(&result);
   return result;
 }
 
-static LightAnimations GetGreenStateAnimations() {
+static LightAnimations GetGreenStateAnimations(
+    const LightAnimations& prev_ped_lights) {
   LightAnimations result;
-  result.traffic_green_main = GetSolidGreen();
-  result.traffic_red_second = GetSolidRed();
-  result.ped_red_main = ped_red_light_animation;
-  result.ped_red_second = ped_red_light_animation;
+  result.side1_traffic_down = GetSolidGreen();
+  result.side2_traffic_up = GetSolidRed();
+  result.side1_pedestrian_up = ped_red_light_animation;
+  result.side2_pedestrian_up = ped_red_light_animation;
+  ApplyFuturePedestrian(&result, prev_ped_lights);
   FinalizeLightAnimations(&result);
   return result;
 }
 
 static LightAnimations GetPedestrianStateAnimations() {
+  LightAnimations result;
+  if (!scenario_main && !scenario_secondary) {
+    result.side1_traffic_up = GetSolidRed();
+    result.side2_traffic_up = GetSolidRed();
+    result.side1_pedestrian_down = GetSolidGreen();
+    result.side2_pedestrian_down = GetSolidGreen();
+    FinalizeLightAnimations(&result);
+    return result;
+  }
+
   if (scenario_main && !scenario_secondary) {
     scenario_secondary = scenario_main;
   }
@@ -331,16 +367,40 @@ static LightAnimations GetPedestrianStateAnimations() {
     scenario_main = scenario_secondary;
   }
 
-  LightAnimations result;
-  if (scenario_main) {
-    result.ped_red_main = scenario_main->pedestrian_red;
-    result.ped_green_main = scenario_main->pedestrian_green;
-  } else if (scenario_secondary) {
-    result.ped_red_second = scenario_secondary->pedestrian_red;
-    result.ped_green_second = scenario_secondary->pedestrian_green;
-  } else {
-    result.ped_green_main = GetSolidGreen();
-    result.ped_green_second = GetSolidGreen();
+  result.side1_pedestrian_up = scenario_main->pedestrian_up_going;
+  result.side1_pedestrian_down = scenario_main->pedestrian_down_going;
+  result.side1_traffic_up = scenario_main->traffic_up;
+  result.side1_traffic_middle = scenario_main->traffic_middle;
+  result.side1_traffic_down = scenario_main->traffic_down;
+  if (!result.side1_traffic_up && !result.side1_traffic_middle &&
+      !result.side1_traffic_down) {
+    result.side1_traffic_up = GetSolidRed();
+  }
+
+  result.side2_pedestrian_up = scenario_secondary->pedestrian_up_going;
+  result.side2_pedestrian_down = scenario_secondary->pedestrian_down_going;
+  result.side2_traffic_up = scenario_secondary->traffic_up;
+  result.side2_traffic_middle = scenario_secondary->traffic_middle;
+  result.side2_traffic_down = scenario_secondary->traffic_down;
+  if (!result.side2_traffic_up && !result.side2_traffic_middle &&
+      !result.side2_traffic_down) {
+    result.side2_traffic_up = GetSolidRed();
+  }
+
+  if (scenario_main->pedestrian_up_stopped) {
+    result.future_pedestrian_up = scenario_main->pedestrian_up_stopped;
+    result.has_future_pedestrian = true;
+  } else if (scenario_secondary->pedestrian_up_stopped) {
+    result.future_pedestrian_up = scenario_main->pedestrian_up_stopped;
+    result.has_future_pedestrian = true;
+  }
+
+  if (scenario_main->pedestrian_down_stopped) {
+    result.future_pedestrian_down = scenario_main->pedestrian_down_stopped;
+    result.has_future_pedestrian = true;
+  } else if (scenario_secondary->pedestrian_down_stopped) {
+    result.future_pedestrian_down = scenario_main->pedestrian_down_stopped;
+    result.has_future_pedestrian = true;
   }
 
   FinalizeLightAnimations(&result);
@@ -375,6 +435,7 @@ static void TryRunAnimationLoop() {
   LightStage prev_stage = LightStage::NOT_STARTED;
   size_t ped_frames_shown = 0;
   LightAnimations current_lights;
+  LightAnimations prev_ped_lights;
   while (!should_interrupt_animation_loop) {
     uint64_t cur_time = GetTimeInMillis();
     if (next_processing_time > cur_time) {
@@ -388,7 +449,7 @@ static void TryRunAnimationLoop() {
     next_processing_time = cur_time + kHoldTimeMs;
 
     if (prev_stage == LightStage::PEDESTRIAN &&
-        ped_frames_shown >= current_lights.max_ped_frame_count) {
+        ped_frames_shown >= current_lights.max_pedestrian_frame_count) {
       // We have just finished showing pedestrian's animations.
       // Start full cycle again.
       transport_anchor_time_ms = cur_time;
@@ -398,26 +459,27 @@ static void TryRunAnimationLoop() {
     if (stage != prev_stage) {
       switch (stage) {
         case LightStage::RED:
-          current_lights = GetRedStateAnimations();
+          current_lights = GetRedStateAnimations(prev_ped_lights);
           printf("Switching to RED light\n");
           break;
         case LightStage::YELLOW:
-          current_lights = GetYellowStateAnimations();
+          current_lights = GetYellowStateAnimations(prev_ped_lights);
           printf("Switching to YELLOW light\n");
           break;
         case LightStage::GREEN:
-          current_lights = GetGreenStateAnimations();
+          current_lights = GetGreenStateAnimations(prev_ped_lights);
           printf("Switching to GREEN light\n");
           break;
         case LightStage::PEDESTRIAN:
         default:
           printf("Switching to PEDESTRIAN light\n");
           current_lights = GetPedestrianStateAnimations();
-          if (current_lights.max_ped_frame_count == 1) {
+          if (current_lights.max_pedestrian_frame_count == 1) {
             // For whatever reason - we have no animation running.
             // Just keep the colors for the regular interval.
-            current_lights.max_ped_frame_count = 236;
+            current_lights.max_pedestrian_frame_count = 236;
           }
+          prev_ped_lights = current_lights;
           break;
       }
 
@@ -430,7 +492,7 @@ static void TryRunAnimationLoop() {
       fprintf(stderr, "Failed to render, resetting current scenarios\n");
       scenario_main = nullptr;
       scenario_secondary = nullptr;
-      ped_frames_shown = current_lights.max_ped_frame_count;
+      ped_frames_shown = current_lights.max_pedestrian_frame_count;
       continue;
     }
 
@@ -451,6 +513,85 @@ static void TryRunAnimationLoop() {
   }
 }
 
+static bool LoadRegularScenario(const Collection* collection,
+                                TransportMode transport_mode) {
+  const Animation* red = collection->FindAnimation("red");
+  const Animation* green = collection->FindAnimation("green");
+  if (!red && !green) {
+    return false;
+  }
+
+  size_t animation_count = collection->animations.size();
+
+  Scenario scenario(transport_mode);
+  if (red) {
+    scenario.pedestrian_up_going = AnimationState(red);
+  }
+
+  if (green) {
+    scenario.pedestrian_down_going = AnimationState(green);
+  }
+
+  if (red && green) {
+    if (animation_count != 2u) {
+      fprintf(stderr, "Unexpected # of animations in '%s'\n",
+              collection->name.c_str());
+    }
+    all_scenarios.push_back(scenario);
+    return true;
+  }
+
+  if (animation_count != 1u) {
+    fprintf(stderr, "Unexpected # of animations in '%s'\n",
+            collection->name.c_str());
+  }
+
+  if (red) {
+    scenario.pedestrian_down_going = scenario.pedestrian_up_going;
+    scenario.pedestrian_down_going.flip_h = true;
+  } else {
+    scenario.pedestrian_up_going = scenario.pedestrian_down_going;
+    scenario.pedestrian_up_going.flip_h = true;
+  }
+  all_scenarios.push_back(scenario);
+  return true;
+}
+
+static bool LoadFullCycleScenario(const Collection* collection) {
+  const Animation* red_up = collection->FindAnimation("red_up");
+  const Animation* red_down = collection->FindAnimation("red_down");
+  const Animation* green_up = collection->FindAnimation("green_up");
+  const Animation* green_down = collection->FindAnimation("green_down");
+
+  size_t animation_count = collection->animations.size();
+  size_t normal_count = (green_up ? 1 : 0) + (green_down ? 1 : 0);
+  size_t stopped_count = (red_up ? 1 : 0) + (red_down ? 1 : 0);
+  if (!normal_count && !stopped_count) {
+    return false;
+  }
+
+  if ((!normal_count || !stopped_count) ||
+      (normal_count + stopped_count != animation_count)) {
+    fprintf(stderr, "Unexpected animation set in '%s'\n",
+            collection->name.c_str());
+    return false;
+  }
+
+  // Use "red" animations for the stopped part of the cycle,
+  // and use "green" animations for the "go" part of the cycle.
+  Scenario scenario(TransportMode::NORMAL);
+  scenario.pedestrian_up_going = AnimationState(green_up);
+  scenario.pedestrian_down_going = AnimationState(green_down);
+
+  scenario.pedestrian_up_stopped = AnimationState(red_up);
+  scenario.pedestrian_up_stopped.is_cyclic = true;
+  scenario.pedestrian_down_stopped = AnimationState(red_down);
+  scenario.pedestrian_down_stopped.is_cyclic = true;
+
+  all_scenarios.push_back(scenario);
+  return true;
+}
+
 static void LoadScenario(const std::string& name,
                          TransportMode transport_mode) {
   Collection* collection = FindCollection(name);
@@ -463,42 +604,26 @@ static void LoadScenario(const std::string& name,
   printf("Loading scenario '%s' with %d animations\n", name.c_str(),
          animation_count);
 
-  const Animation* red = collection->FindAnimation("red");
-  const Animation* green = collection->FindAnimation("green");
-
-  Scenario scenario(transport_mode);
-  if (red) {
-    scenario.pedestrian_red = AnimationState(red);
+  bool loaded = false;
+  if (!loaded) {
+    loaded = LoadRegularScenario(collection, transport_mode);
+  }
+  if (!loaded) {
+    loaded = LoadFullCycleScenario(collection);
   }
 
-  if (green) {
-    scenario.pedestrian_green = AnimationState(green);
-  }
-
-  if (red && green) {
-    if (animation_count != 2u) {
-      fprintf(stderr, "Unexpected # of animations in '%s'\n", name.c_str());
-    }
-    all_scenarios.push_back(scenario);
+  if (!loaded) {
+    fprintf(stderr, "Unsupported animation set in '%s'\n", name.c_str());
     return;
   }
 
-  if (red || green) {
-    if (animation_count != 1u) {
-      fprintf(stderr, "Unexpected # of animations in '%s'\n", name.c_str());
-    }
-    if (red) {
-      scenario.pedestrian_green = scenario.pedestrian_red;
-      scenario.pedestrian_green.flip_h = true;
-    } else {
-      scenario.pedestrian_red = scenario.pedestrian_green;
-      scenario.pedestrian_red.flip_h = true;
-    }
-    all_scenarios.push_back(scenario);
-    return;
-  }
-
-  fprintf(stderr, "Unexpected animation set in '%s'\n", name.c_str());
+  Scenario& scenario = all_scenarios.back();
+  scenario.traffic_up = collection->FindAnimation("equalizer_up");
+  scenario.traffic_up.is_cyclic = true;
+  scenario.traffic_middle = collection->FindAnimation("equalizer_middle");
+  scenario.traffic_middle.is_cyclic = true;
+  scenario.traffic_down = collection->FindAnimation("equalizer_down");
+  scenario.traffic_down.is_cyclic = true;
 }
 
 static std::vector<AnimationState> LoadAnimationSet(const std::string& name) {
@@ -542,7 +667,7 @@ static void SetupScenarios() {
 
   LoadScenario("bike", TransportMode::NORMAL);
   LoadScenario("burning", TransportMode::NORMAL);
-  // LoadScenario("dance", TransportMode::NORMAL);
+  LoadScenario("dance", TransportMode::NORMAL);
   LoadScenario("hug", TransportMode::NORMAL);
   LoadScenario("lsd", TransportMode::TRIPPY);
   LoadScenario("meditation", TransportMode::NORMAL);
@@ -566,7 +691,7 @@ static void SetupScenarios() {
     }
   }
 
-  scenario_main = &all_scenarios[0];
+  scenario_main = &all_scenarios[2];
 }
 
 //

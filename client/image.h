@@ -70,6 +70,8 @@ struct AnimationState {
     return (animation ? animation->frame_count : 0);
   }
 
+  operator bool() const { return (animation != nullptr); }
+
   AnimationState() = default;
   AnimationState(const Animation* animation) : animation(animation) {}
 };
