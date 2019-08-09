@@ -43,6 +43,7 @@ struct ScenarioSpec {
 };
 
 struct Scenario {
+  std::string name;
   AnimationState ped_move_up;
   AnimationState ped_move_down;
   AnimationState ped_stop_up;
@@ -51,6 +52,8 @@ struct Scenario {
   AnimationState traffic_middle;
   AnimationState traffic_down;
   std::vector<AnimationState> traffic_random;
+
+  Scenario(const std::string& name) : name(name) {}
 };
 
 // TODO(igorc): Implement blinking transport light.
@@ -440,8 +443,14 @@ static void UpdateRandomTrafficLight(AnimationState* state,
   *state = current_lights->traffic_random[next_idx];
 }
 
-static void UpdateRandomTrafficLights(LightAnimations* current_lights) {
+static void UpdateRandomTrafficLights(LightAnimations* current_lights,
+                                      size_t ped_frames_shown) {
   if (current_lights->traffic_random.empty()) {
+    return;
+  }
+
+  // Wait for 5.5 seconds for the trip to start.
+  if (ped_frames_shown < 5500 / kHoldTimeMs) {
     return;
   }
 
@@ -522,8 +531,11 @@ static void TryRunAnimationLoop() {
           printf("Switching to GREEN light\n");
           break;
         case LightStage::PEDESTRIAN:
-        default:
-          printf("Switching to PEDESTRIAN light\n");
+        default: {
+          size_t next_idx = GetRandom(0, all_scenarios.size() - 1);
+          scenario_main = &all_scenarios[next_idx];
+          printf("Switching to PEDESTRIAN light, scenario '%s'\n",
+                 scenario_main->name.c_str());
           current_lights = GetPedestrianStateAnimations();
           if (current_lights.max_pedestrian_frame_count == 1) {
             // For whatever reason - we have no animation running.
@@ -532,13 +544,14 @@ static void TryRunAnimationLoop() {
           }
           prev_ped_lights = current_lights;
           break;
+        }
       }
 
       prev_stage = stage;
       ped_frames_shown = 0;
     }
 
-    UpdateRandomTrafficLights(&current_lights);
+    UpdateRandomTrafficLights(&current_lights, ped_frames_shown);
 
     // offscreen_canvas->Clear();
     if (!RenderLightAnimations(&current_lights, offscreen_canvas)) {
@@ -638,7 +651,7 @@ static void LoadScenario(const ScenarioSpec& spec) {
 
   printf("Loading scenario '%s'\n", spec.name.c_str());
 
-  all_scenarios.emplace_back();
+  all_scenarios.emplace_back(spec.name);
   Scenario& scenario = all_scenarios.back();
 
   bool success = true;
@@ -722,8 +735,6 @@ static void LoadAllScenarios() {
   party.traffic_middle = "equalizer_middle";
   party.traffic_down = "equalizer_down";
   LoadScenario(party);
-
-  scenario_main = &all_scenarios[9];
 }
 
 //
