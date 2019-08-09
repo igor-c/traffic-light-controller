@@ -115,6 +115,10 @@ static void SleepMillis(uint64_t milli_seconds) {
   nanosleep(&ts, NULL);
 }
 
+static size_t GetRandom(size_t min, size_t max) {
+  return min + rand() / (RAND_MAX / (max - min + 1) + 1);
+}
+
 void quit(int val) {
   while (1) {
     std::cout << "Press 'q' or 'Q'  and ENTER to quit\n";
@@ -273,6 +277,8 @@ struct LightAnimations {
   AnimationState side2_pedestrian_up;
   AnimationState side2_pedestrian_down;
 
+  std::vector<AnimationState> traffic_random;
+
   bool has_future_pedestrian = false;
   AnimationState future_pedestrian_up;
   AnimationState future_pedestrian_down;
@@ -393,6 +399,12 @@ static LightAnimations GetPedestrianStateAnimations() {
   result.side2_traffic_middle = scenario2->traffic_middle;
   result.side2_traffic_down = scenario2->traffic_down;
 
+  if (!scenario1->traffic_random.empty()) {
+    result.traffic_random = scenario1->traffic_random;
+  } else if (!scenario2->traffic_random.empty()) {
+    result.traffic_random = scenario2->traffic_random;
+  }
+
   // Set continuing animations on pedestrian lights, if selected.
   if (scenario1->ped_stop_up || scenario1->ped_stop_down) {
     result.future_pedestrian_up = scenario1->ped_stop_up;
@@ -416,6 +428,34 @@ static LightAnimations GetPedestrianStateAnimations() {
 
   FinalizeLightAnimations(&result);
   return result;
+}
+
+static void UpdateRandomTrafficLight(AnimationState* state,
+                                     LightAnimations* current_lights) {
+  size_t frame_count = state->frame_count();
+  if (frame_count > 2 && state->cur_frame < frame_count)
+    return;
+
+  size_t next_idx = GetRandom(0, current_lights->traffic_random.size() - 1);
+  *state = current_lights->traffic_random[next_idx];
+}
+
+static void UpdateRandomTrafficLights(LightAnimations* current_lights) {
+  if (current_lights->traffic_random.empty()) {
+    return;
+  }
+
+  UpdateRandomTrafficLight(&current_lights->side1_pedestrian_up,
+                           current_lights);
+
+  UpdateRandomTrafficLight(&current_lights->side1_traffic_up, current_lights);
+  UpdateRandomTrafficLight(&current_lights->side1_traffic_middle,
+                           current_lights);
+  UpdateRandomTrafficLight(&current_lights->side1_traffic_down, current_lights);
+  UpdateRandomTrafficLight(&current_lights->side2_traffic_up, current_lights);
+  UpdateRandomTrafficLight(&current_lights->side2_traffic_middle,
+                           current_lights);
+  UpdateRandomTrafficLight(&current_lights->side2_traffic_down, current_lights);
 }
 
 static bool RenderLightAnimations(LightAnimations* lights,
@@ -497,6 +537,8 @@ static void TryRunAnimationLoop() {
       prev_stage = stage;
       ped_frames_shown = 0;
     }
+
+    UpdateRandomTrafficLights(&current_lights);
 
     // offscreen_canvas->Clear();
     if (!RenderLightAnimations(&current_lights, offscreen_canvas)) {
@@ -639,13 +681,13 @@ static void LoadScenario(const ScenarioSpec& spec) {
   scenario.traffic_middle.is_cyclic = true;
   scenario.traffic_down.is_cyclic = true;
 
-  if (scenario.ped_move_up && !scenario.ped_move_down) {
+  /*if (scenario.ped_move_up && !scenario.ped_move_down) {
     scenario.ped_move_down = scenario.ped_move_up;
     scenario.ped_move_down.flip_h = true;
   } else if (scenario.ped_move_down && !scenario.ped_move_up) {
     scenario.ped_move_up = scenario.ped_move_down;
     scenario.ped_move_up.flip_h = true;
-  }
+  }*/
 
   if (!success) {
     fprintf(stderr, "Failed to load scenario '%s'\n", spec.name.c_str());
@@ -681,7 +723,7 @@ static void LoadAllScenarios() {
   party.traffic_down = "equalizer_down";
   LoadScenario(party);
 
-  scenario_main = &all_scenarios[3];
+  scenario_main = &all_scenarios[9];
 }
 
 //
