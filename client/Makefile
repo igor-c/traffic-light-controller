@@ -1,5 +1,5 @@
-CXXFLAGS=-Wall -O3 -g -Wextra -Wno-unused-parameter
-OBJECTS=client.o
+CXXFLAGS=-Wall -O3 -g -Wextra -Wno-unused-parameter -pedantic
+OBJECTS=client.o image.o network.o
 BINARIES=client
 
 # Where our library resides. You mostly only need to change the
