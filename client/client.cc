@@ -694,13 +694,15 @@ static void LoadScenario(const ScenarioSpec& spec) {
   scenario.traffic_middle.is_cyclic = true;
   scenario.traffic_down.is_cyclic = true;
 
-  /*if (scenario.ped_move_up && !scenario.ped_move_down) {
-    scenario.ped_move_down = scenario.ped_move_up;
-    scenario.ped_move_down.flip_h = true;
-  } else if (scenario.ped_move_down && !scenario.ped_move_up) {
-    scenario.ped_move_up = scenario.ped_move_down;
-    scenario.ped_move_up.flip_h = true;
-  }*/
+  if (scenario.traffic_random.empty()) {
+    if (scenario.ped_move_up && !scenario.ped_move_down) {
+      scenario.ped_move_down = scenario.ped_move_up;
+      scenario.ped_move_down.flip_h = true;
+    } else if (scenario.ped_move_down && !scenario.ped_move_up) {
+      scenario.ped_move_up = scenario.ped_move_down;
+      scenario.ped_move_up.flip_h = true;
+    }
+  }
 
   if (!success) {
     fprintf(stderr, "Failed to load scenario '%s'\n", spec.name.c_str());
@@ -825,6 +827,8 @@ int main(int argc, char* argv[]) {
       }
     }
   }
+
+  srand(time(nullptr));
 
   SetServerAddress("192.168.88.100", 1235);
 
