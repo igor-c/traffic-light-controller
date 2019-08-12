@@ -17,9 +17,6 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#include <wiringPi.h>
-
-#include "content-streamer.h"
 #include "image.h"
 #include "led-matrix.h"
 #include "network.h"
@@ -61,7 +58,6 @@ static constexpr uint64_t kRedGreenLightTimeMs = 2 * 1000;
 static constexpr uint64_t kYellowLightTimeMs = 1 * 1000;
 
 // Scenario-related controls:
-static std::vector<AnimationState> trippy_set;
 static AnimationState ped_red_light_animation;
 static std::vector<Scenario> all_scenarios;
 static uint64_t transport_anchor_time_ms = 0;
@@ -69,37 +65,9 @@ static int traffic_light_id = 0;
 static const Scenario* scenario_main = nullptr;
 static bool is_traffic_light_started = false;
 
-class UserTCPprotocol {
- public:
-  enum class Type : uint8_t { COMMUNICATION, STATE, SETTINGS, DATA };
-  enum class Communication : uint8_t { WHO, ACK, RCV };
-  enum class State : uint8_t { STOP, START, RESET };
-  enum class Settings : uint8_t { MPANEL };
-  enum class MPanel : uint8_t {
-    SCANMODE,
-    MULTIPLEXING,
-    PWMBIT,
-    BRIGHTNESS,
-    GPIOSLOWDOWN
-  };
-  enum class Data : uint8_t { UNICON, BUTTON, SCENARIO };
-  enum class Unicon : uint8_t { LED0, LED1, LED2 };
-  enum class Scenario : uint8_t { ALLCOMBINATIONS, NEXTCOMBO };
-  enum class ClientName : uint8_t { TL12, TL34, TL56, TL78 };
-};
-
-#define UniconLight0 8
-#define UniconLight1 9
-#define UniconLight2 27
-#define CM_ON 1
-#define CM_OFF 0
-
 static rgb_matrix::RGBMatrix* matrix;
-static rgb_matrix::FrameCanvas* stream_creation_canvas = nullptr;
 static bool should_interrupt_animation_loop = false;
 static bool has_received_signal = false;
-static uint8_t clientName =
-    static_cast<uint8_t>(UserTCPprotocol::ClientName::TL12);
 
 //------------------------SERVER-------------------------------------------
 
@@ -122,7 +90,7 @@ static size_t GetRandom(size_t min, size_t max) {
   return min + rand() / (RAND_MAX / (max - min + 1) + 1);
 }
 
-void quit(int val) {
+static void quit(int val) {
   while (1) {
     std::cout << "Press 'q' or 'Q'  and ENTER to quit\n";
     char c;
@@ -137,99 +105,13 @@ void quit(int val) {
   }
 }
 
-void DoCmd(uint8_t* data) {
-  if (data[0] == static_cast<int>(UserTCPprotocol::Type::COMMUNICATION)) {
-    if (data[1] == static_cast<int>(UserTCPprotocol::Communication::WHO)) {
-      uint8_t ar[] = {0, 2, 0, clientName};
-      SendToServer(ar, sizeof(ar));
-    } else if (data[1] ==
-               static_cast<int>(UserTCPprotocol::Communication::ACK)) {
-      // uint8_t ar[] = {0, 2, 1, 1};
-      // SendToServer(ar, sizeof(ar));
-    }
-    return;
-  }
-
-  if (data[0] == static_cast<int>(UserTCPprotocol::Type::STATE)) {
-    printf("UserTCPprotocol STATE");
-    if (data[1] == static_cast<int>(UserTCPprotocol::State::STOP)) {
-      printf("OFF\n");
-      is_traffic_light_started = false;
-    } else if (data[1] == static_cast<int>(UserTCPprotocol::State::START)) {
-      printf("ON\n");
-      is_traffic_light_started = true;
-    }
-    should_interrupt_animation_loop = true;
-    return;
-  }
-
-  if (data[0] == static_cast<int>(UserTCPprotocol::Type::SETTINGS)) {
-    printf("UserTCPprotocol SETTINGS");
-    return;
-  }
-
-  if (data[0] != static_cast<int>(UserTCPprotocol::Type::DATA))
-    return;
-
-  printf("UserTCPprotocol DATA");
-  if (data[1] == static_cast<int>(UserTCPprotocol::Data::UNICON)) {
-    if (data[2] == static_cast<int>(UserTCPprotocol::Unicon::LED0)) {
-      if (data[3] == 0) {
-        printf("ON\n");
-        digitalWrite(UniconLight0, CM_OFF);
-      } else if (data[3] == 2) {
-        printf("OFF\n");
-        digitalWrite(UniconLight0, CM_ON);
-      }
-    } else if (data[2] == static_cast<int>(UserTCPprotocol::Unicon::LED1)) {
-      if (data[3] == 0) {
-        printf("ON\n");
-        digitalWrite(UniconLight1, CM_OFF);
-      } else if (data[3] == 2) {
-        printf("OFF\n");
-        digitalWrite(UniconLight1, CM_ON);
-      }
-    } else if (data[2] == static_cast<int>(UserTCPprotocol::Unicon::LED2)) {
-      if (data[3] == 0) {
-        printf("ON\n");
-        digitalWrite(UniconLight2, CM_OFF);
-      } else if (data[3] == 2) {
-        printf("OFF\n");
-        digitalWrite(UniconLight2, CM_ON);
-      }
-    }
-    return;
-  }
-
-  if (data[1] == static_cast<int>(UserTCPprotocol::Data::SCENARIO)) {
-    // NEWCOMBINATIONS, SECRETCOMBO, NEXTCOMBO
-    // ALLCOMBINATIONS(0), NEXTCOMBO (1)
-    if (data[2] ==
-        static_cast<int>(UserTCPprotocol::Scenario::ALLCOMBINATIONS)) {
-      printf("UserTCPprotocol NEWCOMBINATIONS\n");
-      std::vector<int> sequence_ids;
-      for (int i = 0; i < 10; ++i) {
-        sequence_ids.push_back(data[4 + i]);
-      }
-      // TODO(igorc): LoadScenario(sequence_ids);
-      should_interrupt_animation_loop = true;
-    } else if (data[2] ==
-               static_cast<int>(UserTCPprotocol::Scenario::NEXTCOMBO)) {
-      // if (data[3] < all_scenarios.size()) {
-      //   current_scenario_idx = data[3];
-      //   should_interrupt_animation_loop = true;
-      // }
-    }
-  }
-}
-
 void ReadSocketAndExecuteCommands() {
   while (true) {
     std::vector<uint8_t> command = ReadSocketCommand();
     if (command.empty())
       break;
 
-    DoCmd(command.data());
+    // DoCmd(command.data());
   }
 }
 
@@ -579,20 +461,6 @@ static void TryRunAnimationLoop() {
   }
 }
 
-static void SetupUnicornPins() {
-  return;
-
-  wiringPiSetup();
-
-  pinMode(UniconLight0, OUTPUT);
-  pinMode(UniconLight1, OUTPUT);
-  pinMode(UniconLight2, OUTPUT);
-
-  digitalWrite(UniconLight0, CM_OFF);
-  digitalWrite(UniconLight1, CM_OFF);
-  digitalWrite(UniconLight2, CM_OFF);
-}
-
 static void SetupCommonScenarioData() {
   transport_anchor_time_ms = GetTimeInMillis();
 
@@ -795,45 +663,9 @@ int main(int argc, char* argv[]) {
   rgb_matrix::RuntimeOptions runtime_opt;
   runtime_opt.gpio_slowdown = 4;
 
-  int opt;
-  while ((opt = getopt(argc, argv, "n:s:m:")) != -1) {
-    switch (opt) {
-      case 'n': {
-        printf("indName: %s\n", optarg);
-        int indName = atoi(optarg);
-        printf("indName convert atoi: %i\n", indName);
-        if (indName == 1)
-          clientName = static_cast<uint8_t>(UserTCPprotocol::ClientName::TL12);
-        else if (indName == 2)
-          clientName = static_cast<uint8_t>(UserTCPprotocol::ClientName::TL34);
-        else if (indName == 3)
-          clientName = static_cast<uint8_t>(UserTCPprotocol::ClientName::TL56);
-        else if (indName == 4)
-          clientName = static_cast<uint8_t>(UserTCPprotocol::ClientName::TL78);
-        break;
-      }
-      case 's': {
-        printf("scan_mode: %s\n", optarg);
-        int scan_mode = atoi(optarg);
-        printf("scan_mode convert atoi: %i\n", scan_mode);
-        matrix_options.scan_mode = scan_mode;
-        break;
-      }
-      case 'm': {
-        printf("multiplexing: %s\n", optarg);
-        int multiplexing = atoi(optarg);
-        printf("multiplexing convert atoi: %i\n", multiplexing);
-        matrix_options.multiplexing = multiplexing;
-        break;
-      }
-    }
-  }
-
   srand(time(nullptr));
 
   // SetServerAddress("192.168.88.100", 1235);
-
-  SetupUnicornPins();
 
   SetRotations(std::vector<int>({-90, -90, -90, -90, -90, 90, 90, 90, 90, 90}));
   InitImages();
@@ -844,8 +676,6 @@ int main(int argc, char* argv[]) {
   if (matrix == NULL) {
     return 1;
   }
-
-  stream_creation_canvas = matrix->CreateFrameCanvas();
 
   // signal(SIGTERM, InterruptHandler);
   // signal(SIGINT, InterruptHandler);
