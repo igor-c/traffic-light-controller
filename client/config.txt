@@ -1,0 +1,7 @@
+matrix = chinese
+# matrix = adafruit
+
+traffic_light_id = 0
+
+red_green_light_sec = 2
+yellow_light_sec = 1

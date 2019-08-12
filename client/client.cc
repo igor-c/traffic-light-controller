@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <string>
@@ -21,6 +22,16 @@
 #include "led-matrix.h"
 #include "network.h"
 #include "pixel-mapper.h"
+#include "utils.h"
+
+struct ClientConfig {
+  bool is_matrix_chinese = false;
+  // TODO(igorc): Implement blinking transport light.
+  uint64_t red_green_light_ms = 2;
+  uint64_t yellow_light_ms = 1;
+  int traffic_light_id = 0;
+  // std::map<std::string, std::string>
+};
 
 struct ScenarioSpec {
   std::string name;
@@ -53,15 +64,12 @@ struct Scenario {
   Scenario(const std::string& name) : name(name) {}
 };
 
-// TODO(igorc): Implement blinking transport light.
-static constexpr uint64_t kRedGreenLightTimeMs = 2 * 1000;
-static constexpr uint64_t kYellowLightTimeMs = 1 * 1000;
+static ClientConfig client_config;
 
 // Scenario-related controls:
 static AnimationState ped_red_light_animation;
 static std::vector<Scenario> all_scenarios;
 static uint64_t transport_anchor_time_ms = 0;
-static int traffic_light_id = 0;
 static const Scenario* scenario_main = nullptr;
 static bool is_traffic_light_started = false;
 
@@ -70,25 +78,6 @@ static bool should_interrupt_animation_loop = false;
 static bool has_received_signal = false;
 
 //------------------------SERVER-------------------------------------------
-
-static uint64_t GetTimeInMillis() {
-  struct timeval tp;
-  gettimeofday(&tp, NULL);
-  return tp.tv_sec * 1000 + tp.tv_usec / 1000;
-}
-
-static void SleepMillis(uint64_t milli_seconds) {
-  if (milli_seconds <= 0)
-    return;
-  struct timespec ts;
-  ts.tv_sec = milli_seconds / 1000;
-  ts.tv_nsec = (milli_seconds % 1000) * 1000000;
-  nanosleep(&ts, NULL);
-}
-
-static size_t GetRandom(size_t min, size_t max) {
-  return min + rand() / (RAND_MAX / (max - min + 1) + 1);
-}
 
 static void quit(int val) {
   while (1) {
@@ -121,7 +110,7 @@ static void InterruptHandler(int signo) {
 }
 
 static bool IsMainRoadFacing() {
-  return (traffic_light_id % 2 == 0);
+  return (client_config.traffic_light_id % 2 == 0);
 }
 
 // Note that colors refers to those shown along the main road.
@@ -139,11 +128,13 @@ static LightStage GetLightStage(uint64_t cur_time) {
   }
 
   uint64_t rel_time = cur_time - transport_anchor_time_ms;
-  if (rel_time < kRedGreenLightTimeMs) {
+  if (rel_time < client_config.red_green_light_ms) {
     return LightStage::RED;
-  } else if (rel_time < kRedGreenLightTimeMs + kYellowLightTimeMs) {
+  } else if (rel_time <
+             client_config.red_green_light_ms + client_config.yellow_light_ms) {
     return LightStage::YELLOW;
-  } else if (rel_time < kRedGreenLightTimeMs * 2 + kYellowLightTimeMs) {
+  } else if (rel_time < client_config.red_green_light_ms * 2 +
+                            client_config.yellow_light_ms) {
     return LightStage::GREEN;
   } else {
     return LightStage::PEDESTRIAN;
@@ -366,6 +357,10 @@ static bool RenderLightAnimations(LightAnimations* lights,
   return true;
 }
 
+static void PickNextPedestrian() {
+  scenario_main = PickNextRandom<Scenario>(all_scenarios, scenario_main);
+}
+
 static void TryRunAnimationLoop() {
   static rgb_matrix::FrameCanvas* offscreen_canvas = nullptr;
   if (!offscreen_canvas)
@@ -416,8 +411,7 @@ static void TryRunAnimationLoop() {
           break;
         case LightStage::PEDESTRIAN:
         default: {
-          size_t next_idx = GetRandom(0, all_scenarios.size() - 1);
-          scenario_main = &all_scenarios[next_idx];
+          PickNextPedestrian();
           printf("Switching to PEDESTRIAN light, scenario '%s'\n",
                  scenario_main->name.c_str());
           current_lights = GetPedestrianStateAnimations();
@@ -449,10 +443,6 @@ static void TryRunAnimationLoop() {
 
     static constexpr int kVsyncMultiple = 1;
     offscreen_canvas = matrix->SwapOnVSync(offscreen_canvas, kVsyncMultiple);
-
-    // digitalWrite(UniconLight0, scenario->UnicolLightL[0].at(seqInd));
-    // digitalWrite(UniconLight1, scenario->UnicolLightL[1].at(seqInd));
-    // digitalWrite(UniconLight2, scenario->UnicolLightL[2].at(seqInd));
   }
 
   if (!is_traffic_light_started) {
@@ -609,10 +599,71 @@ static void LoadAllScenarios() {
   LoadScenario(party);
 }
 
+static void ReportUnknownConfig(const std::string& line) {
+  fprintf(stderr, "Unknown config line '%s'\n", line.c_str());
+}
+
+static ClientConfig ReadConfig(const char* path) {
+  ClientConfig result;
+  std::ifstream config_file(path);
+  std::string line;
+  while (std::getline(config_file, line)) {
+    line = trim(line);
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
+
+    size_t equal_pos = line.find('*');
+    if (equal_pos == std::string::npos) {
+      fprintf(stderr, "Line without equals sign in config file\n");
+      continue;
+    }
+
+    std::string name = trim(line.substr(0, equal_pos));
+    std::string value = trim(line.substr(equal_pos + 1));
+
+    if (name == "matrix") {
+      if (value == "chinese") {
+        result.is_matrix_chinese = true;
+      } else if (value == "adafruit") {
+        result.is_matrix_chinese = false;
+      } else {
+        ReportUnknownConfig(line);
+      }
+      continue;
+    }
+
+    if (name == "traffic_light_id") {
+      result.traffic_light_id = std::stoi(value);
+      continue;
+    }
+
+    if (name == "red_green_light_sec") {
+      result.red_green_light_ms = std::stoi(value) * 1000;
+      continue;
+    }
+
+    if (name == "yellow_light_sec") {
+      result.yellow_light_ms = std::stoi(value) * 1000;
+      continue;
+    }
+  }
+  return result;
+}
+
 //
 //------------------------MAIN----------------------------------------
 //
-int main(int argc, char* argv[]) {
+int main(int argc, const char* argv[]) {
+  srand(time(nullptr));
+
+  const char* config_path = "config.txt";
+  if (argc > 1) {
+    config_path = argv[1];
+  }
+
+  client_config = ReadConfig(config_path);
+
   //------------------------ANIMATION----------------------------------------
   //
   // --led-gpio-mapping=<name> : Name of GPIO mapping used. Default "regular"
@@ -651,9 +702,6 @@ int main(int argc, char* argv[]) {
   matrix_options.rows = 32;
   matrix_options.cols = 32;
   matrix_options.chain_length = 10;
-  // matrix_options.multiplexing = 0;
-  // matrix_options.led_rgb_sequence = "BGR";
-  matrix_options.led_rgb_sequence = "RGB";
   matrix_options.brightness = 70;
 
   // Options to eliminate visual glitches and artifacts:
@@ -663,7 +711,12 @@ int main(int argc, char* argv[]) {
   rgb_matrix::RuntimeOptions runtime_opt;
   runtime_opt.gpio_slowdown = 4;
 
-  srand(time(nullptr));
+  if (client_config.is_matrix_chinese) {
+    matrix_options.multiplexing = 2;
+    matrix_options.led_rgb_sequence = "BGR";
+  } else {
+    matrix_options.led_rgb_sequence = "RGB";
+  }
 
   // SetServerAddress("192.168.88.100", 1235);
 
