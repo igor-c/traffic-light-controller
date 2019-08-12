@@ -67,11 +67,13 @@ struct Scenario {
 static ClientConfig client_config;
 
 // Scenario-related controls:
-static AnimationState ped_red_light_animation;
 static std::vector<Scenario> all_scenarios;
 static uint64_t transport_anchor_time_ms = 0;
 static const Scenario* scenario_main = nullptr;
 static bool is_traffic_light_started = false;
+
+static AnimationState red_light_animation;
+static AnimationState stop_cat_animation;
 
 static rgb_matrix::RGBMatrix* matrix;
 static bool should_interrupt_animation_loop = false;
@@ -206,8 +208,8 @@ static LightAnimations GetRedStateAnimations(
     result.side1_traffic_down = GetSolidGreen();
     result.side2_traffic_down = GetSolidGreen();
   }
-  result.side1_pedestrian_up = ped_red_light_animation;
-  result.side2_pedestrian_up = ped_red_light_animation;
+  result.side1_pedestrian_up = red_light_animation;
+  result.side2_pedestrian_up = red_light_animation;
   ApplyFuturePedestrian(&result, prev_ped_lights);
   FinalizeLightAnimations(&result);
   return result;
@@ -218,8 +220,8 @@ static LightAnimations GetYellowStateAnimations(
   LightAnimations result;
   result.side1_traffic_middle = GetSolidYellow();
   result.side2_traffic_middle = GetSolidYellow();
-  result.side1_pedestrian_up = ped_red_light_animation;
-  result.side2_pedestrian_up = ped_red_light_animation;
+  result.side1_pedestrian_up = red_light_animation;
+  result.side2_pedestrian_up = red_light_animation;
   ApplyFuturePedestrian(&result, prev_ped_lights);
   FinalizeLightAnimations(&result);
   return result;
@@ -235,8 +237,8 @@ static LightAnimations GetGreenStateAnimations(
     result.side1_traffic_up = GetSolidRed();
     result.side2_traffic_up = GetSolidRed();
   }
-  result.side1_pedestrian_up = ped_red_light_animation;
-  result.side2_pedestrian_up = ped_red_light_animation;
+  result.side1_pedestrian_up = red_light_animation;
+  result.side2_pedestrian_up = red_light_animation;
   ApplyFuturePedestrian(&result, prev_ped_lights);
   FinalizeLightAnimations(&result);
   return result;
@@ -289,6 +291,9 @@ static LightAnimations GetPedestrianStateAnimations() {
   } else if (scenario2->ped_stop_up || scenario2->ped_stop_down) {
     result.future_pedestrian_up = scenario2->ped_stop_up;
     result.future_pedestrian_down = scenario2->ped_stop_down;
+    result.has_future_pedestrian = true;
+  } else if (stop_cat_animation && IsRandomPercentile(25)) {
+    result.future_pedestrian_up = stop_cat_animation;
     result.has_future_pedestrian = true;
   }
 
@@ -454,14 +459,14 @@ static void TryRunAnimationLoop() {
 static void SetupCommonScenarioData() {
   transport_anchor_time_ms = GetTimeInMillis();
 
-  ped_red_light_animation = GetSolidRed();
+  red_light_animation = GetSolidRed();
 
   Collection* still_images = FindCollection("still");
   if (still_images) {
     const Animation* animation = still_images->FindAnimation("stop_cat");
     if (animation) {
-      ped_red_light_animation = AnimationState(animation);
-      ped_red_light_animation.rotation = -90;
+      stop_cat_animation = AnimationState(animation);
+      stop_cat_animation.rotation = -90;
       printf("Using stop_cat.gif for pedestrians\n");
     }
   }
