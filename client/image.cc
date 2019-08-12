@@ -259,17 +259,17 @@ AnimationState GetSolidBlack() {
 }
 
 AnimationState GetSolidRed() {
-  static const Animation* animation = CreateSolidAnimation(255, 0, 0);
+  static const Animation* animation = CreateSolidAnimation(0xff, 0, 0);
   return AnimationState(animation);
 }
 
 AnimationState GetSolidYellow() {
-  static const Animation* animation = CreateSolidAnimation(255, 255, 0);
+  static const Animation* animation = CreateSolidAnimation(0xff, 0xf2, 0);
   return AnimationState(animation);
 }
 
 AnimationState GetSolidGreen() {
-  static const Animation* animation = CreateSolidAnimation(0, 255, 0);
+  static const Animation* animation = CreateSolidAnimation(0, 0xff, 0);
   return AnimationState(animation);
 }
 
@@ -439,7 +439,7 @@ bool RenderFrame(const std::vector<AnimationState*>& animations,
   for (size_t position = 0; position < animations.size(); ++position) {
     // Rendering starts from the end of the image, reverse positions.
     size_t x_offset = (position_count - position - 1) * 32;
-    if (x_offset >= canvas->width())
+    if (x_offset >= (size_t) canvas->width())
       continue;
 
     int rotation =
