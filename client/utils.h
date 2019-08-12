@@ -77,3 +77,22 @@ inline const T* PickNextRandom(const std::vector<T>& list, const T* previous) {
 
   return &list[next_idx];
 }
+
+template <typename T>
+inline const T* PickNextSequential(const std::vector<T>& list,
+                                   const T* previous) {
+  if (list.empty())
+    return nullptr;
+
+  size_t pos;
+  for (pos = 0; pos < list.size(); ++pos) {
+    if (&list[pos] == previous)
+      break;
+  }
+
+  pos++;
+  if (pos >= list.size())
+    pos = 0;
+
+  return &list[pos];
+}

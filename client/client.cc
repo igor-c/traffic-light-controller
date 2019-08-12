@@ -30,6 +30,7 @@ struct ClientConfig {
   uint64_t red_green_light_ms = 2;
   uint64_t yellow_light_ms = 1;
   int traffic_light_id = 0;
+  bool is_sequential = false;
   // std::map<std::string, std::string>
 };
 
@@ -363,7 +364,11 @@ static bool RenderLightAnimations(LightAnimations* lights,
 }
 
 static void PickNextPedestrian() {
-  scenario_main = PickNextRandom<Scenario>(all_scenarios, scenario_main);
+  if (client_config.is_sequential) {
+    scenario_main = PickNextSequential<Scenario>(all_scenarios, scenario_main);
+  } else {
+    scenario_main = PickNextRandom<Scenario>(all_scenarios, scenario_main);
+  }
 }
 
 static void TryRunAnimationLoop() {
@@ -417,9 +422,10 @@ static void TryRunAnimationLoop() {
         case LightStage::PEDESTRIAN:
         default: {
           PickNextPedestrian();
-          printf("Switching to PEDESTRIAN light, scenario '%s'\n",
-                 scenario_main->name.c_str());
           current_lights = GetPedestrianStateAnimations();
+          printf("Switching to PEDESTRIAN light, scenario '%s', future_ped=%d\n",
+                 scenario_main->name.c_str(),
+                 (int) current_lights.has_future_pedestrian);
           if (current_lights.max_pedestrian_frame_count == 1) {
             // For whatever reason - we have no animation running.
             // Just keep the colors for the regular interval.
@@ -611,6 +617,11 @@ static void ReportUnknownConfig(const std::string& line) {
 static ClientConfig ReadConfig(const char* path) {
   ClientConfig result;
   std::ifstream config_file(path);
+  if (config_file.fail()) {
+    fprintf(stderr, "Unable to read '%s'\n", path);
+    return result;
+  }
+
   std::string line;
   while (std::getline(config_file, line)) {
     line = trim(line);
@@ -618,7 +629,7 @@ static ClientConfig ReadConfig(const char* path) {
       continue;
     }
 
-    size_t equal_pos = line.find('*');
+    size_t equal_pos = line.find('=');
     if (equal_pos == std::string::npos) {
       fprintf(stderr, "Line without equals sign in config file\n");
       continue;
@@ -640,6 +651,11 @@ static ClientConfig ReadConfig(const char* path) {
 
     if (name == "traffic_light_id") {
       result.traffic_light_id = std::stoi(value);
+      continue;
+    }
+
+    if (name == "is_sequential") {
+      result.is_sequential = (std::stoi(value) != 0);
       continue;
     }
 
