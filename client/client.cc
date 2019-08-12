@@ -31,6 +31,7 @@ struct ClientConfig {
   uint64_t yellow_light_ms = 1;
   int traffic_light_id = 0;
   bool is_sequential = false;
+  std::string first_scenario;
   // std::map<std::string, std::string>
 };
 
@@ -363,7 +364,21 @@ static bool RenderLightAnimations(LightAnimations* lights,
   return true;
 }
 
+static const Scenario* FindScenario(const std::string& name) {
+  for (size_t i = 0; i < all_scenarios.size(); ++i) {
+    if (all_scenarios[i].name == name)
+      return &all_scenarios[i];
+  }
+  return nullptr;
+}
+
 static void PickNextPedestrian() {
+  if (!scenario_main && !client_config.first_scenario.empty()) {
+    scenario_main = FindScenario(client_config.first_scenario);
+    if (scenario_main)
+      return;
+  }
+
   if (client_config.is_sequential) {
     scenario_main = PickNextSequential<Scenario>(all_scenarios, scenario_main);
   } else {
@@ -423,9 +438,13 @@ static void TryRunAnimationLoop() {
         default: {
           PickNextPedestrian();
           current_lights = GetPedestrianStateAnimations();
-          printf("Switching to PEDESTRIAN light, scenario '%s', future_ped=%d\n",
-                 scenario_main->name.c_str(),
-                 (int) current_lights.has_future_pedestrian);
+          printf(
+              "Switching to PEDESTRIAN light, scenario '%s', "
+              "future_ped='%s'\n",
+              scenario_main->name.c_str(),
+              (current_lights.future_pedestrian_up
+                   ? current_lights.future_pedestrian_up.animation->name.c_str()
+                   : ""));
           if (current_lights.max_pedestrian_frame_count == 1) {
             // For whatever reason - we have no animation running.
             // Just keep the colors for the regular interval.
@@ -473,7 +492,7 @@ static void SetupCommonScenarioData() {
     if (animation) {
       stop_cat_animation = AnimationState(animation);
       stop_cat_animation.rotation = -90;
-      printf("Using stop_cat.gif for pedestrians\n");
+      printf("Found stop_cat.gif\n");
     }
   }
 }
@@ -659,6 +678,11 @@ static ClientConfig ReadConfig(const char* path) {
       continue;
     }
 
+    if (name == "first_scenario") {
+      result.first_scenario = value;
+      continue;
+    }
+
     if (name == "red_green_light_sec") {
       result.red_green_light_ms = std::stoi(value) * 1000;
       continue;
@@ -668,6 +692,8 @@ static ClientConfig ReadConfig(const char* path) {
       result.yellow_light_ms = std::stoi(value) * 1000;
       continue;
     }
+
+    ReportUnknownConfig(line);
   }
   return result;
 }

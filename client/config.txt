@@ -1,9 +1,10 @@
-matrix = chinese
-# matrix = adafruit
+# matrix = chinese
+matrix = adafruit
 
 traffic_light_id = 0
 
 is_sequential = 1
+first_scenario = lsd
 
 red_green_light_sec = 2
 yellow_light_sec = 1
