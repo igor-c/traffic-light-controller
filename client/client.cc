@@ -456,6 +456,8 @@ static void UpdateRandomTrafficLights(LightAnimations* current_lights,
 
   UpdateRandomTrafficLight(&current_lights->side1_pedestrian_up,
                            current_lights);
+  UpdateRandomTrafficLight(&current_lights->side2_pedestrian_up,
+                           current_lights);
 
   UpdateRandomTrafficLight(&current_lights->side1_traffic_up, current_lights);
   UpdateRandomTrafficLight(&current_lights->side1_traffic_middle,
@@ -714,11 +716,11 @@ static void LoadAllScenarios() {
   SetupCommonScenarioData();
 
   LoadScenario(ScenarioSpec("bike", "", "red"));
-  LoadScenario(ScenarioSpec("burning", "", "red"));
-  LoadScenario(ScenarioSpec("hug", "red", "green"));
+  // LoadScenario(ScenarioSpec("burning", "", "red"));
+  // LoadScenario(ScenarioSpec("hug", "red", "green"));
   LoadScenario(ScenarioSpec("pac-man", "", "green"));
   LoadScenario(ScenarioSpec("pray", "", "red"));
-  LoadScenario(ScenarioSpec("rastaman", "red", "green"));
+  // LoadScenario(ScenarioSpec("rastaman", "red", "green"));
   LoadScenario(ScenarioSpec("recursion", "", "green"));
   LoadScenario(ScenarioSpec("ufo", "red", "green"));
   // LoadScenario(ScenarioSpec("sex", "", "red"));
@@ -781,10 +783,9 @@ int main(int argc, char* argv[]) {
   matrix_options.rows = 32;
   matrix_options.cols = 32;
   matrix_options.chain_length = 10;
-  matrix_options.parallel = 1;
-  matrix_options.scan_mode = 0;
-  matrix_options.multiplexing = 2;
-  matrix_options.led_rgb_sequence = "BGR";
+  // matrix_options.multiplexing = 0;
+  // matrix_options.led_rgb_sequence = "BGR";
+  matrix_options.led_rgb_sequence = "RGB";
   matrix_options.brightness = 70;
 
   // Options to eliminate visual glitches and artifacts:
@@ -830,7 +831,7 @@ int main(int argc, char* argv[]) {
 
   srand(time(nullptr));
 
-  SetServerAddress("192.168.88.100", 1235);
+  // SetServerAddress("192.168.88.100", 1235);
 
   SetupUnicornPins();
 
