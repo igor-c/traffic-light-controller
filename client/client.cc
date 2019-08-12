@@ -604,14 +604,14 @@ static void LoadAllScenarios() {
   SetupCommonScenarioData();
 
   LoadScenario(ScenarioSpec("bike", "", "red"));
-  // LoadScenario(ScenarioSpec("burning", "", "red"));
-  // LoadScenario(ScenarioSpec("hug", "red", "green"));
+  LoadScenario(ScenarioSpec("burning", "", "red"));
+  LoadScenario(ScenarioSpec("hug", "red", "green"));
   LoadScenario(ScenarioSpec("pac-man", "", "green"));
   LoadScenario(ScenarioSpec("pray", "", "red"));
-  // LoadScenario(ScenarioSpec("rastaman", "red", "green"));
+  LoadScenario(ScenarioSpec("rastaman", "red", "green"));
   LoadScenario(ScenarioSpec("recursion", "", "green"));
   LoadScenario(ScenarioSpec("ufo", "red", "green"));
-  // LoadScenario(ScenarioSpec("sex", "", "red"));
+  LoadScenario(ScenarioSpec("sex", "", "red"));
 
   ScenarioSpec dance("dance", "green_up", "green_down");
   dance.ped_stop_up = "red_up";
