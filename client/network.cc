@@ -10,6 +10,8 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -20,6 +22,9 @@
   do {                                 \
     retvar = (expression);             \
   } while (retvar == -1 && errno == EINTR);
+
+constexpr char KMulticastAddr[] = "239.255.223.01";
+constexpr int kUdpPort = 0xdf0f;
 
 constexpr int64_t kMaxReconnectDelayMs = 1000;
 constexpr int64_t kConnectTimeoutMs = 10000;
@@ -248,4 +253,111 @@ void ConnectToServerIfNecessary() {
     if (socket_fd != -1)
       break;
   }
+}
+
+void UdpSocketNetwork::Close() {
+  if (fd_ >= 0) {
+    close(fd_);
+    fd_ = -1;
+  }
+}
+
+bool UdpSocketNetwork::TryConnect() {
+  if (fd_ >= 0) {
+    return true;
+  }
+
+  fd_ = socket(AF_INET, SOCK_DGRAM, 0);
+  if (fd_ < 0) {
+    fprintf(stderr, "can't create client socket");
+    return false;
+  }
+
+  int optval = 1;
+  if (setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+    fprintf(stderr, "can't set reuseaddr option on socket: %s",
+            strerror(errno));
+    Close();
+    return false;
+  }
+
+  int flags = fcntl(fd_, F_GETFL) | O_NONBLOCK;
+  if (fcntl(fd_, F_SETFL, flags) < 0) {
+    fprintf(stderr, "can't set socket to nonblocking mode: %s",
+            strerror(errno));
+    Close();
+    return false;
+  }
+
+  sockaddr_in if_addr;
+  memset(&if_addr, 0, sizeof(if_addr));
+  if_addr.sin_family = AF_INET;
+  if_addr.sin_port = htons((unsigned short)kUdpPort);
+  if_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  if (bind(fd_, (struct sockaddr*)&if_addr, sizeof(if_addr)) < 0) {
+    fprintf(stderr, "can't bind client socket to port %d: %s", kUdpPort,
+            strerror(errno));
+    Close();
+    return false;
+  }
+
+  struct ip_mreq mc_group;
+  mc_group.imr_multiaddr.s_addr = inet_addr(KMulticastAddr);
+  mc_group.imr_interface.s_addr =
+      htonl(INADDR_ANY);  // inet_addr("203.106.93.94");
+  if (setsockopt(fd_, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mc_group,
+                 sizeof(mc_group)) < 0) {
+    fprintf(stderr, "can't join multicast group %s: %s", KMulticastAddr,
+            strerror(errno));
+    Close();
+    return false;
+  }
+
+  fprintf(stderr, "Connected, bound to port %d, multicast group %s", kUdpPort,
+          KMulticastAddr);
+  return true;
+}
+
+size_t UdpSocketNetwork::Receive(void* buf, size_t size) {
+  if (!TryConnect())
+    return 0;
+
+  sockaddr_in serveraddr;
+  socklen_t serverlen = sizeof(serveraddr);
+  ssize_t received_size;
+  CALL_RETRY(received_size,
+             recvfrom(fd_, buf, size, 0,
+                      reinterpret_cast<sockaddr*>(&serveraddr), &serverlen));
+
+  if (received_size < 0) {
+    if (errno == EWOULDBLOCK || errno == EAGAIN) {
+      return 0;  // no data on nonblocking socket
+    }
+    fprintf(stderr, "recvfrom failed on %d: %s", fd_, strerror(errno));
+    return 0;
+  }
+
+  return received_size;
+}
+
+bool UdpSocketNetwork::Broadcast(void* buf, size_t size) {
+  if (!TryConnect())
+    return false;
+
+  sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons((unsigned short)kUdpPort);
+  addr.sin_addr.s_addr = inet_addr(KMulticastAddr);
+  ssize_t sent_size;
+  CALL_RETRY(sent_size,
+             sendto(fd_, buf, size, 0, (struct sockaddr*)&addr, sizeof(addr)));
+
+  if (sent_size < 0) {
+    fprintf(stderr, "sendto broadcast of %d bytes on port %d, socket %d: %s",
+            size, kUdpPort, fd_, strerror(errno));
+    return false;
+  }
+
+  return true;
 }
