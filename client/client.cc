@@ -81,6 +81,8 @@ static rgb_matrix::RGBMatrix* matrix;
 static bool should_interrupt_animation_loop = false;
 static bool has_received_signal = false;
 
+static UdpSocketNetwork udp_socket;
+
 //------------------------SERVER-------------------------------------------
 
 static void quit(int val) {
@@ -294,7 +296,7 @@ static LightAnimations GetPedestrianStateAnimations() {
     result.future_pedestrian_up = scenario2->ped_stop_up;
     result.future_pedestrian_down = scenario2->ped_stop_down;
     result.has_future_pedestrian = true;
-  } else if (stop_cat_animation && IsRandomPercentile(25)) {
+  } else if (stop_cat_animation && IsRandomPercentile(9)) {
     result.future_pedestrian_up = stop_cat_animation;
     result.has_future_pedestrian = true;
   }
@@ -766,6 +768,8 @@ int main(int argc, const char* argv[]) {
   }
 
   // SetServerAddress("192.168.88.100", 1235);
+
+  udp_socket.TryConnect();
 
   SetRotations(std::vector<int>({-90, -90, -90, -90, -90, 90, 90, 90, 90, 90}));
   InitImages();
