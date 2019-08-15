@@ -32,7 +32,7 @@ inline std::string trim(std::string s) {
   return rtrim(ltrim(s));
 }
 
-inline uint64_t GetTimeInMillis() {
+inline uint64_t CurrentTimeMillis() {
   struct timeval tp;
   gettimeofday(&tp, NULL);
   return tp.tv_sec * 1000 + tp.tv_usec / 1000;

@@ -27,19 +27,24 @@
 
 constexpr char KMulticastAddr[] = "239.255.223.01";
 constexpr int kUdpPort = 0xdf0f;
+constexpr uint32_t kUdpMagic = 0xdeafbeef;
 
 constexpr int64_t kMaxReconnectDelayMs = 1000;
 constexpr int64_t kConnectTimeoutMs = 10000;
 
 static std::string server_host;
 static int server_port;
-static int socket_fd = -1;
+static int client_socket_fd = -1;
 static bool is_connected = false;
 static struct addrinfo* addrinfo_main = nullptr;
 static struct addrinfo* addrinfo_cur = nullptr;
 static int64_t last_connect_attempt_time = -1;
 static std::vector<std::vector<uint8_t>> send_buffer;
 static std::vector<uint8_t> receive_buffer;
+
+static int udp_socket = -1;
+static uint8_t udp_receive_buffer[65536];
+static uint8_t udp_send_buffer[65536];
 
 static void* get_in_addr(struct sockaddr* sa) {
   if (sa->sa_family == AF_INET) {
@@ -49,9 +54,9 @@ static void* get_in_addr(struct sockaddr* sa) {
 }
 
 void DisconnectFromServer() {
-  if (socket_fd != -1) {
-    close(socket_fd);
-    socket_fd = -1;
+  if (client_socket_fd != -1) {
+    close(client_socket_fd);
+    client_socket_fd = -1;
   }
 
   addrinfo_cur = nullptr;
@@ -79,7 +84,8 @@ static void TrySendToServer() {
   while (!send_buffer.empty()) {
     std::vector<uint8_t>& buffer = send_buffer.front();
     ssize_t bytes_sent;
-    CALL_RETRY(bytes_sent, send(socket_fd, buffer.data(), buffer.size(), 0));
+    CALL_RETRY(bytes_sent,
+               send(client_socket_fd, buffer.data(), buffer.size(), 0));
 
     if (bytes_sent == -1) {
       if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -124,7 +130,7 @@ std::vector<uint8_t> ReadSocketCommand() {
       return std::vector<uint8_t>();
 
     ssize_t num_bytes;
-    CALL_RETRY(num_bytes, recv(socket_fd, tmp, sizeof(tmp), 0));
+    CALL_RETRY(num_bytes, recv(client_socket_fd, tmp, sizeof(tmp), 0));
 
     if (num_bytes == -1) {
       if (errno == EAGAIN || errno == EWOULDBLOCK)
@@ -164,8 +170,8 @@ std::vector<uint8_t> ReadSocketCommand() {
 
 static void FinishConnecting() {
   int rv;
-  CALL_RETRY(
-      rv, connect(socket_fd, addrinfo_cur->ai_addr, addrinfo_cur->ai_addrlen));
+  CALL_RETRY(rv, connect(client_socket_fd, addrinfo_cur->ai_addr,
+                         addrinfo_cur->ai_addrlen));
 
   if (rv == -1) {
     if (errno == EALREADY)
@@ -191,19 +197,19 @@ void ConnectToServerIfNecessary() {
   if (server_host == "")
     return;
 
-  if (socket_fd != -1 && is_connected)
+  if (client_socket_fd != -1 && is_connected)
     return;
 
-  int64_t cur_time = GetTimeInMillis();
-  if (socket_fd != -1 &&
+  int64_t cur_time = CurrentTimeMillis();
+  if (client_socket_fd != -1 &&
       cur_time >= last_connect_attempt_time + kConnectTimeoutMs) {
     fprintf(stderr, "Timed out connecting to the server\n");
     DisconnectFromServer();
   }
 
-  if (socket_fd != -1) {
+  if (client_socket_fd != -1) {
     FinishConnecting();
-    if (socket_fd != -1)
+    if (client_socket_fd != -1)
       return;
   }
 
@@ -236,58 +242,67 @@ void ConnectToServerIfNecessary() {
               sizeof(s));
 
     printf("Connecting to %s\n", s);
-    socket_fd = socket(addrinfo_cur->ai_family,
-                       addrinfo_cur->ai_socktype | SOCK_NONBLOCK,
-                       addrinfo_cur->ai_protocol);
-    if (socket_fd == -1) {
+    client_socket_fd = socket(addrinfo_cur->ai_family,
+                              addrinfo_cur->ai_socktype | SOCK_NONBLOCK,
+                              addrinfo_cur->ai_protocol);
+    if (client_socket_fd == -1) {
       perror("socket() failed");
       DisconnectFromServer();
       continue;
     }
 
     FinishConnecting();
-    if (socket_fd != -1)
+    if (client_socket_fd != -1)
       break;
   }
 }
 
-void UdpSocketNetwork::Close() {
-  if (fd_ >= 0) {
-    close(fd_);
-    fd_ = -1;
+void CloseUdp() {
+  if (udp_socket >= 0) {
+    close(udp_socket);
+    udp_socket = -1;
   }
 }
 
-bool UdpSocketNetwork::TryConnect() {
-  if (fd_ >= 0) {
+bool TryConnectUdp() {
+  if (udp_socket >= 0) {
     return true;
   }
 
   static uint64_t last_connect_time = 0;
-  if (GetTimeInMillis() - last_connect_time < 5000) {
+  if (CurrentTimeMillis() - last_connect_time < 5000) {
     return false;
   }
-  last_connect_time = GetTimeInMillis();
+  last_connect_time = CurrentTimeMillis();
 
-  fd_ = socket(AF_INET, SOCK_DGRAM, 0);
-  if (fd_ < 0) {
+  udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+  if (udp_socket < 0) {
     fprintf(stderr, "can't create client socket\n");
     return false;
   }
 
   int optval = 1;
-  if (setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+  if (setsockopt(udp_socket, SOL_SOCKET, SO_REUSEADDR, &optval,
+                 sizeof(optval)) < 0) {
     fprintf(stderr, "can't set reuseaddr option on socket: %s\n",
             strerror(errno));
-    Close();
+    CloseUdp();
     return false;
   }
 
-  int flags = fcntl(fd_, F_GETFL) | O_NONBLOCK;
-  if (fcntl(fd_, F_SETFL, flags) < 0) {
+  int flags = fcntl(udp_socket, F_GETFL) | O_NONBLOCK;
+  if (fcntl(udp_socket, F_SETFL, flags) < 0) {
     fprintf(stderr, "can't set socket to nonblocking mode: %s\n",
             strerror(errno));
-    Close();
+    CloseUdp();
+    return false;
+  }
+
+  u_char loop = 0;
+  if (setsockopt(udp_socket, IPPROTO_IP, IP_MULTICAST_LOOP, &loop,
+                 sizeof(loop)) < 0) {
+    fprintf(stderr, "can't disable IP_MULTICAST_LOOP %s\n", strerror(errno));
+    CloseUdp();
     return false;
   }
 
@@ -296,10 +311,10 @@ bool UdpSocketNetwork::TryConnect() {
   if_addr.sin_family = AF_INET;
   if_addr.sin_port = htons((unsigned short)kUdpPort);
   if_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  if (bind(fd_, (struct sockaddr*)&if_addr, sizeof(if_addr)) < 0) {
+  if (bind(udp_socket, (struct sockaddr*)&if_addr, sizeof(if_addr)) < 0) {
     fprintf(stderr, "can't bind client socket to port %d: %s\n", kUdpPort,
             strerror(errno));
-    Close();
+    CloseUdp();
     return false;
   }
 
@@ -307,11 +322,11 @@ bool UdpSocketNetwork::TryConnect() {
   mc_group.imr_multiaddr.s_addr = inet_addr(KMulticastAddr);
   mc_group.imr_interface.s_addr =
       htonl(INADDR_ANY);  // inet_addr("203.106.93.94");
-  if (setsockopt(fd_, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mc_group,
+  if (setsockopt(udp_socket, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mc_group,
                  sizeof(mc_group)) < 0) {
     fprintf(stderr, "can't join multicast group %s: %s\n", KMulticastAddr,
             strerror(errno));
-    Close();
+    CloseUdp();
     return false;
   }
 
@@ -320,31 +335,45 @@ bool UdpSocketNetwork::TryConnect() {
   return true;
 }
 
-size_t UdpSocketNetwork::Receive(void* buf, size_t size) {
-  if (!TryConnect())
-    return 0;
+uint8_t* ReceiveUdp(size_t* size) {
+  *size = 0;
+  if (!TryConnectUdp())
+    return nullptr;
 
   sockaddr_in serveraddr;
   socklen_t serverlen = sizeof(serveraddr);
   ssize_t received_size;
-  CALL_RETRY(received_size,
-             recvfrom(fd_, buf, size, 0,
-                      reinterpret_cast<sockaddr*>(&serveraddr), &serverlen));
+  CALL_RETRY(
+      received_size,
+      recvfrom(udp_socket, udp_receive_buffer, sizeof(udp_receive_buffer), 0,
+               reinterpret_cast<sockaddr*>(&serveraddr), &serverlen));
 
   if (received_size < 0) {
     if (errno == EWOULDBLOCK || errno == EAGAIN) {
-      return 0;  // no data on nonblocking socket
+      return nullptr;  // no data on nonblocking socket
     }
-    fprintf(stderr, "recvfrom failed on %d: %s\n", fd_, strerror(errno));
-    Close();
-    return 0;
+    fprintf(stderr, "recvfrom failed on %d: %s\n", udp_socket, strerror(errno));
+    CloseUdp();
+    return nullptr;
   }
 
-  return received_size;
+  uint32_t* magic_ptr = reinterpret_cast<uint32_t*>(&udp_receive_buffer[0]);
+  if ((size_t)received_size <= sizeof(uint32_t) || *magic_ptr != kUdpMagic) {
+    fprintf(stderr, "Received unexpected UDP data\n");
+    return nullptr;
+  }
+
+  *size = received_size - sizeof(uint32_t);
+  return udp_receive_buffer + sizeof(uint32_t);
 }
 
-bool UdpSocketNetwork::Broadcast(void* buf, size_t size) {
-  if (!TryConnect())
+bool BroadcastUdp(void* buf, size_t size) {
+  if (size > sizeof(udp_send_buffer) - sizeof(uint32_t)) {
+    fprintf(stderr, "Broadcast data is too large\n");
+    return false;
+  }
+
+  if (!TryConnectUdp())
     return false;
 
   sockaddr_in addr;
@@ -352,14 +381,22 @@ bool UdpSocketNetwork::Broadcast(void* buf, size_t size) {
   addr.sin_family = AF_INET;
   addr.sin_port = htons((unsigned short)kUdpPort);
   addr.sin_addr.s_addr = inet_addr(KMulticastAddr);
-  ssize_t sent_size;
-  CALL_RETRY(sent_size,
-             sendto(fd_, buf, size, 0, (struct sockaddr*)&addr, sizeof(addr)));
 
-  if (sent_size < 0) {
-    fprintf(stderr, "sendto broadcast of %d bytes on port %d, socket %d: %s\n",
-            size, kUdpPort, fd_, strerror(errno));
-    Close();
+  ssize_t size_to_send = size + sizeof(uint32_t);
+  uint32_t* magic_ptr = reinterpret_cast<uint32_t*>(&udp_send_buffer[0]);
+  *magic_ptr = kUdpMagic;
+  memcpy(udp_send_buffer + sizeof(uint32_t), buf, size);
+
+  ssize_t sent_size;
+  CALL_RETRY(sent_size, sendto(udp_socket, udp_send_buffer, size_to_send, 0,
+                               (struct sockaddr*)&addr, sizeof(addr)));
+
+  if (sent_size != size_to_send) {
+    fprintf(stderr,
+            "sendto broadcast of %d bytes on port %d, socket %d, "
+            "result %d: %s\n",
+            size, kUdpPort, udp_socket, size_to_send, strerror(errno));
+    CloseUdp();
     return false;
   }
 

@@ -66,13 +66,23 @@ struct Scenario {
   Scenario(const std::string& name) : name(name) {}
 };
 
+struct UdpMessage {
+  uint64_t time_relative_to_anchor_ms;
+  char next_scenario[256];
+  uint8_t next_has_stop_cat;
+};
+
 static ClientConfig client_config;
 
 // Scenario-related controls:
 static std::vector<Scenario> all_scenarios;
 static uint64_t transport_anchor_time_ms = 0;
 static const Scenario* scenario_main = nullptr;
+static bool scenario_main_stop_cat = false;
 static bool is_traffic_light_started = false;
+
+static const Scenario* next_scenario = nullptr;
+static bool next_has_stop_cat = false;
 
 static AnimationState red_light_animation;
 static AnimationState stop_cat_animation;
@@ -81,7 +91,7 @@ static rgb_matrix::RGBMatrix* matrix;
 static bool should_interrupt_animation_loop = false;
 static bool has_received_signal = false;
 
-static UdpSocketNetwork udp_socket;
+static const Scenario* FindScenario(const std::string& name);
 
 //------------------------SERVER-------------------------------------------
 
@@ -100,6 +110,38 @@ static void quit(int val) {
   }
 }
 
+static void ProcessUdpCommand(uint8_t* data, size_t size) {
+  if (size != sizeof(UdpMessage)) {
+    fprintf(stderr, "Wrong UDP message size %d\n", (int)size);
+    return;
+  }
+
+  UdpMessage* msg = (UdpMessage*)data;
+
+  // Compensate remote time for average processing delay.
+  msg->time_relative_to_anchor_ms += kHoldTimeMs / 2;
+  uint64_t old_anchor = transport_anchor_time_ms;
+  transport_anchor_time_ms =
+      CurrentTimeMillis() - msg->time_relative_to_anchor_ms;
+
+  int time_diff = 0;
+  if (transport_anchor_time_ms > old_anchor) {
+    time_diff = transport_anchor_time_ms - old_anchor;
+  } else if (transport_anchor_time_ms < old_anchor) {
+    time_diff = -(old_anchor - transport_anchor_time_ms);
+  }
+
+  printf("Received UDP scenario '%s', stop_cat=%d, anchor_diff=%d\n",
+         msg->next_scenario, (int)msg->next_has_stop_cat, time_diff);
+
+  next_scenario = FindScenario(msg->next_scenario);
+  if (!next_scenario) {
+    fprintf(stderr, "Unknown UDP scenario name %s\n", msg->next_scenario);
+  }
+
+  next_has_stop_cat = msg->next_has_stop_cat;
+}
+
 void ReadSocketAndExecuteCommands() {
   while (true) {
     std::vector<uint8_t> command = ReadSocketCommand();
@@ -107,6 +149,22 @@ void ReadSocketAndExecuteCommands() {
       break;
 
     // DoCmd(command.data());
+  }
+
+  uint8_t* last_udp_data = nullptr;
+  size_t last_udp_size = 0;
+  while (true) {
+    size_t udp_size = 0;
+    uint8_t* udp_data = ReceiveUdp(&udp_size);
+    if (!udp_data || !udp_size)
+      break;
+
+    last_udp_data = udp_data;
+    last_udp_size = udp_size;
+  }
+
+  if (last_udp_data && last_udp_size) {
+    ProcessUdpCommand(last_udp_data, last_udp_size);
   }
 }
 
@@ -296,7 +354,7 @@ static LightAnimations GetPedestrianStateAnimations() {
     result.future_pedestrian_up = scenario2->ped_stop_up;
     result.future_pedestrian_down = scenario2->ped_stop_down;
     result.has_future_pedestrian = true;
-  } else if (stop_cat_animation && IsRandomPercentile(9)) {
+  } else if (scenario_main_stop_cat && stop_cat_animation) {
     result.future_pedestrian_up = stop_cat_animation;
     result.has_future_pedestrian = true;
   }
@@ -375,17 +433,43 @@ static const Scenario* FindScenario(const std::string& name) {
 }
 
 static void PickNextPedestrian() {
-  if (!scenario_main && !client_config.first_scenario.empty()) {
-    scenario_main = FindScenario(client_config.first_scenario);
-    if (scenario_main)
-      return;
+  if (next_scenario) {
+    scenario_main = next_scenario;
+    scenario_main_stop_cat = next_has_stop_cat;
+    next_scenario = nullptr;
+    next_has_stop_cat = false;
+    return;
   }
 
-  if (client_config.is_sequential) {
-    scenario_main = PickNextSequential<Scenario>(all_scenarios, scenario_main);
+  if (!scenario_main && !client_config.first_scenario.empty()) {
+    scenario_main = FindScenario(client_config.first_scenario);
   } else {
-    scenario_main = PickNextRandom<Scenario>(all_scenarios, scenario_main);
+    if (client_config.is_sequential) {
+      scenario_main =
+          PickNextSequential<Scenario>(all_scenarios, scenario_main);
+    } else {
+      scenario_main = PickNextRandom<Scenario>(all_scenarios, scenario_main);
+    }
   }
+
+  scenario_main_stop_cat = IsRandomPercentile(9);
+
+  UdpMessage msg;
+  msg.time_relative_to_anchor_ms =
+      CurrentTimeMillis() - transport_anchor_time_ms;
+  msg.next_has_stop_cat = scenario_main_stop_cat;
+
+  if (scenario_main) {
+    strcpy(msg.next_scenario, scenario_main->name.c_str());
+  } else {
+    msg.next_scenario[0] = 0;
+  }
+
+  printf("Broadcasting picked scenario '%s', stop_cat=%d, stagger=%d\n",
+         msg.next_scenario, (int)msg.next_has_stop_cat,
+         (int)(CurrentTimeMillis() - transport_anchor_time_ms));
+
+  BroadcastUdp(&msg, sizeof(msg));
 }
 
 static void TryRunAnimationLoop() {
@@ -397,13 +481,14 @@ static void TryRunAnimationLoop() {
 
   ReadSocketAndExecuteCommands();
 
-  uint64_t next_processing_time = GetTimeInMillis();
+  uint64_t next_processing_time = CurrentTimeMillis();
+  uint64_t next_pedestrian_switch_time = 0;  // Wait for red light to decide.
   LightStage prev_stage = LightStage::NOT_STARTED;
   size_t ped_frames_shown = 0;
   LightAnimations current_lights;
   LightAnimations prev_ped_lights;
   while (!should_interrupt_animation_loop) {
-    uint64_t cur_time = GetTimeInMillis();
+    uint64_t cur_time = CurrentTimeMillis();
     if (next_processing_time > cur_time) {
       SleepMillis(next_processing_time - cur_time);
       // Read commands in the time space between frames.
@@ -421,13 +506,24 @@ static void TryRunAnimationLoop() {
       transport_anchor_time_ms = cur_time;
     }
 
+    if (next_pedestrian_switch_time &&
+        cur_time >= next_pedestrian_switch_time) {
+      PickNextPedestrian();
+      next_pedestrian_switch_time = 0;
+    }
+
     LightStage stage = GetLightStage(cur_time);
     if (stage != prev_stage) {
       switch (stage) {
-        case LightStage::RED:
+        case LightStage::RED: {
           current_lights = GetRedStateAnimations(prev_ped_lights);
-          printf("Switching to RED light\n");
+          uint64_t switch_delay_ms =
+              GetRandom(0, (size_t)client_config.red_green_light_ms);
+          next_pedestrian_switch_time = cur_time + switch_delay_ms;
+          printf("Switching to RED light, scenario switch delay is %dms\n",
+                 (int)switch_delay_ms);
           break;
+        }
         case LightStage::YELLOW:
           current_lights = GetYellowStateAnimations(prev_ped_lights);
           printf("Switching to YELLOW light\n");
@@ -438,7 +534,6 @@ static void TryRunAnimationLoop() {
           break;
         case LightStage::PEDESTRIAN:
         default: {
-          PickNextPedestrian();
           current_lights = GetPedestrianStateAnimations();
           printf(
               "Switching to PEDESTRIAN light, scenario '%s', "
@@ -484,7 +579,7 @@ static void TryRunAnimationLoop() {
 }
 
 static void SetupCommonScenarioData() {
-  transport_anchor_time_ms = GetTimeInMillis();
+  transport_anchor_time_ms = CurrentTimeMillis();
 
   red_light_animation = GetSolidRed();
 
@@ -769,7 +864,7 @@ int main(int argc, const char* argv[]) {
 
   // SetServerAddress("192.168.88.100", 1235);
 
-  udp_socket.TryConnect();
+  TryConnectUdp();
 
   SetRotations(std::vector<int>({-90, -90, -90, -90, -90, 90, 90, 90, 90, 90}));
   InitImages();
