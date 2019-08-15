@@ -32,6 +32,16 @@ inline std::string trim(std::string s) {
   return rtrim(ltrim(s));
 }
 
+inline std::string JoinPath(const std::string& p1, const std::string& p2) {
+  if (p1.empty())
+    return p2;
+
+  if (p2.empty())
+    return p1;
+
+  return p1 + "/" + p2;
+}
+
 inline uint64_t CurrentTimeMillis() {
   struct timeval tp;
   gettimeofday(&tp, NULL);

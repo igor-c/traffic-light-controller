@@ -87,7 +87,7 @@ struct Collection {
 
 Collection* FindCollection(const std::string& name);
 
-void InitImages();
+void InitImages(const std::string& app_path);
 
 void CreateIntBasedCollection(const std::string& name,
                               const std::vector<int>& sequence_ids);

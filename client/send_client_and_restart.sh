@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e
+set -ex
 
 PASSWORD="raspberry"
 ADDR=$1
@@ -20,8 +20,7 @@ fi
 
 for x in "$ADDRS"; do
   DEST="pi@$x:/home/pi/traffic-light-controller/client/"
-  sshpass -p "$PASSWORD" scp -p *.cc *.h Makefile $DEST
-  # sshpass -p "$PASSWORD" scp -p client $DEST
-  # sshpass -p "$PASSWORD" scp -p config.txt $DEST
-  # sshpass -p "$PASSWORD" scp -p images/still/* $DEST/images/still/
+  sshpass -p "$PASSWORD" ssh $x 'echo sudo killall client'
+  sshpass -p "$PASSWORD" scp -p client $DEST
+  sshpass -p "$PASSWORD" ssh $x 'sudo reboot'
 done

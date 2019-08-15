@@ -13,6 +13,8 @@
 #include <vector>
 
 #include <errno.h>
+#include <libgen.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <sys/time.h>
@@ -25,10 +27,11 @@
 #include "utils.h"
 
 struct ClientConfig {
+  std::string app_path;
   bool is_matrix_chinese = false;
   // TODO(igorc): Implement blinking transport light.
-  uint64_t red_green_light_ms = 2;
-  uint64_t yellow_light_ms = 1;
+  uint64_t red_green_light_ms = 20000;
+  uint64_t yellow_light_ms = 3000;
   int traffic_light_id = 0;
   bool is_sequential = false;
   std::string first_scenario;
@@ -488,6 +491,9 @@ static void TryRunAnimationLoop() {
   LightAnimations current_lights;
   LightAnimations prev_ped_lights;
   while (!should_interrupt_animation_loop) {
+    fflush(stdout);
+    fflush(stderr);
+
     uint64_t cur_time = CurrentTimeMillis();
     if (next_processing_time > cur_time) {
       SleepMillis(next_processing_time - cur_time);
@@ -538,7 +544,7 @@ static void TryRunAnimationLoop() {
           printf(
               "Switching to PEDESTRIAN light, scenario '%s', "
               "future_ped='%s'\n",
-              scenario_main->name.c_str(),
+              (scenario_main ? scenario_main->name.c_str() : "<none>"),
               (current_lights.future_pedestrian_up
                    ? current_lights.future_pedestrian_up.animation->name.c_str()
                    : ""));
@@ -730,11 +736,14 @@ static void ReportUnknownConfig(const std::string& line) {
   fprintf(stderr, "Unknown config line '%s'\n", line.c_str());
 }
 
-static ClientConfig ReadConfig(const char* path) {
+static ClientConfig ReadConfig(const std::string& app_path) {
   ClientConfig result;
-  std::ifstream config_file(path);
+  result.app_path = app_path;
+
+  std::string full_config_path = app_path + "/config.txt";
+  std::ifstream config_file(full_config_path);
   if (config_file.fail()) {
-    fprintf(stderr, "Unable to read '%s'\n", path);
+    fprintf(stderr, "Unable to read '%s'\n", full_config_path.c_str());
     return result;
   }
 
@@ -792,6 +801,9 @@ static ClientConfig ReadConfig(const char* path) {
 
     ReportUnknownConfig(line);
   }
+
+  fprintf(stderr, "App path '%s', is_chinese=%d\n", result.app_path.c_str(),
+          (int)result.is_matrix_chinese);
   return result;
 }
 
@@ -801,12 +813,21 @@ static ClientConfig ReadConfig(const char* path) {
 int main(int argc, const char* argv[]) {
   srand(time(nullptr));
 
-  const char* config_path = "config.txt";
+  // Redirect stderr to stdout.
+  dup2(1, 2);
+
+  const char* app_path = ".";
   if (argc > 1) {
-    config_path = argv[1];
+    app_path = argv[1];
   }
 
-  client_config = ReadConfig(config_path);
+  char full_app_path[PATH_MAX + 1];
+  if (!realpath(app_path, full_app_path)) {
+    fprintf(stderr, "Unable to get real path for '%s'\n", app_path);
+    return 1;
+  }
+
+  client_config = ReadConfig(full_app_path);
 
   //------------------------ANIMATION----------------------------------------
   //
@@ -867,7 +888,8 @@ int main(int argc, const char* argv[]) {
   TryConnectUdp();
 
   SetRotations(std::vector<int>({-90, -90, -90, -90, -90, 90, 90, 90, 90, 90}));
-  InitImages();
+
+  InitImages(client_config.app_path);
 
   LoadAllScenarios();
 

@@ -11,6 +11,7 @@
 #include <Magick++.h>
 
 #include "led-matrix.h"
+#include "utils.h"
 
 static const Frame* empty_frame = nullptr;
 static std::vector<Collection> all_collections;
@@ -92,12 +93,14 @@ static bool StringStartsWith(const std::string& str,
           0 == str.compare(0, prefix.size(), prefix));
 }
 
-static std::vector<std::string> GetDirList(const std::string& path,
+static std::vector<std::string> GetDirList(const std::string& base_path,
+                                           const std::string& in_path,
                                            const std::string& suffix) {
   std::vector<std::string> result;
-  DIR* dir = opendir(path.c_str());
+  std::string full_path = JoinPath(base_path, in_path);
+  DIR* dir = opendir(full_path.c_str());
   if (!dir) {
-    printf("Unable to list '%s'\n", path.c_str());
+    printf("Unable to list '%s'\n", full_path.c_str());
     return result;
   }
 
@@ -112,13 +115,14 @@ static std::vector<std::string> GetDirList(const std::string& path,
 
     if (entry->d_type == DT_REG) {
       if (suffix.empty() || StringEndsWith(name, suffix)) {
-        result.push_back(path + "/" + name);
+        result.push_back(in_path + "/" + name);
       }
       continue;
     }
 
     if (entry->d_type == DT_DIR) {
-      std::vector<std::string> files = GetDirList(path + "/" + name, suffix);
+      std::vector<std::string> files =
+          GetDirList(base_path, in_path + "/" + name, suffix);
       result.insert(result.end(), files.begin(), files.end());
     }
   }
@@ -290,8 +294,8 @@ static Collection* FindOrCreateCollection(const std::string& name) {
   return &all_collections.back();
 }
 
-static void LoadAllImageFiles() {
-  std::vector<std::string> paths = GetDirList("images", ".gif");
+static void LoadAllImageFiles(const std::string& app_path) {
+  std::vector<std::string> paths = GetDirList(app_path, "images", ".gif");
   for (const auto& path : paths) {
     std::string name = path;
     std::transform(name.begin(), name.end(), name.begin(),
@@ -317,16 +321,16 @@ static void LoadAllImageFiles() {
     }
 
     Collection* collection = FindOrCreateCollection(collection_name);
-    LoadAnimation(collection, name, path);
+    LoadAnimation(collection, name, JoinPath(app_path, path));
   }
 }
 
-void InitImages() {
+void InitImages(const std::string& app_path) {
   Magick::InitializeMagick("");
 
   empty_frame = new Frame(32, 32, 0, 0, 0);
 
-  LoadAllImageFiles();
+  LoadAllImageFiles(app_path);
 }
 
 void CreateIntBasedCollection(const std::string& name,
@@ -439,7 +443,7 @@ bool RenderFrame(const std::vector<AnimationState*>& animations,
   for (size_t position = 0; position < animations.size(); ++position) {
     // Rendering starts from the end of the image, reverse positions.
     size_t x_offset = (position_count - position - 1) * 32;
-    if (x_offset >= (size_t) canvas->width())
+    if (x_offset >= (size_t)canvas->width())
       continue;
 
     int rotation =
