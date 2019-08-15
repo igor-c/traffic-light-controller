@@ -264,7 +264,7 @@ AnimationState GetSolidRed() {
 }
 
 AnimationState GetSolidYellow() {
-  static const Animation* animation = CreateSolidAnimation(0xff, 0xf2, 0);
+  static const Animation* animation = CreateSolidAnimation(0xff, 0xf0, 0);
   return AnimationState(animation);
 }
 
