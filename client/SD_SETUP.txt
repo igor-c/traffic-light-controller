@@ -51,6 +51,13 @@
     scp client/target/client-1.0-SNAPSHOT.jar pi@192.168.1.222:/home/pi/
 
 
+Card backup:
+  sudo dd if=/dev/sdc bs=1M | gzip > ./rpi.gz.dd
+
+Card restore:
+  gzip -dc ./rpi.gz.dd | sudo dd of=/dev/sdc
+
+
 ================
 Random stuff:
 

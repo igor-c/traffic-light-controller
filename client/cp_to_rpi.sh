@@ -13,7 +13,7 @@ if [ -z "$ADDR" ]; then
 fi
 
 if [ $ADDR="all" ]; then
-  ADDRS=`./find_all.sh`
+  ADDRS=`cat all_pi`
 else
   ADDRS=$ADDR
 fi

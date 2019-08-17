@@ -710,6 +710,11 @@ static void LoadAllScenarios() {
   LoadScenario(ScenarioSpec("burning", "", "red"));
   LoadScenario(ScenarioSpec("hug", "red", "green"));
   LoadScenario(ScenarioSpec("pac-man", "", "green"));
+
+  ScenarioSpec lsd("lsd", "", "green");
+  lsd.traffic_random = "mitya";
+  LoadScenario(lsd);
+
   LoadScenario(ScenarioSpec("pray", "", "red"));
   LoadScenario(ScenarioSpec("rastaman", "red", "green"));
   LoadScenario(ScenarioSpec("recursion", "", "green"));
@@ -720,10 +725,6 @@ static void LoadAllScenarios() {
   dance.ped_stop_up = "red_up";
   dance.ped_stop_down = "red_down";
   LoadScenario(dance);
-
-  ScenarioSpec lsd("lsd", "", "green");
-  lsd.traffic_random = "mitya";
-  LoadScenario(lsd);
 
   ScenarioSpec party("party", "red", "green");
   party.traffic_up = "equalizer_up";

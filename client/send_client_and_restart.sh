@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -ex
+set -e
 
 PASSWORD="raspberry"
 ADDR=$1
@@ -13,14 +13,15 @@ if [ -z "$ADDR" ]; then
 fi
 
 if [ $ADDR="all" ]; then
-  ADDRS=`./find_all.sh`
+  ADDRS=`cat all_pi`
 else
   ADDRS=$ADDR
 fi
 
 for x in "$ADDRS"; do
-  DEST="pi@$x:/home/pi/traffic-light-controller/client/"
-  sshpass -p "$PASSWORD" ssh $x 'echo sudo killall client'
+  SSH_HOST="pi@$x"
+  DEST="$SSH_HOST:/home/pi/traffic-light-controller/client/"
+  sshpass -p "$PASSWORD" ssh $SSH_HOST 'sudo killall client'
   sshpass -p "$PASSWORD" scp -p client $DEST
-  sshpass -p "$PASSWORD" ssh $x 'sudo reboot'
+  sshpass -p "$PASSWORD" ssh $SSH_HOST 'sudo reboot'
 done
