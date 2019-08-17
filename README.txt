@@ -2,6 +2,7 @@ Commands on Laptop:
 - Router:
   - Wifi: PEREKRESTOK 88888888
   - Router IP: 192.168.88.1
+  - Router admin page: router.asus.com
   - Admin: light12345
 - Find all PRi's on the network:
   ./find_all.sh
