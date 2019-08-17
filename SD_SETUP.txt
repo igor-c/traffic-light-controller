@@ -90,3 +90,5 @@ Compiling traffic-light-controller:
 * Compile traffic-light-controller:
     git clone https://github.com/igor-c/traffic-light-controller.git
     cd traffic-light-controller
+
+Resizing the filesystem on /dev/sdc2 to 716800 (4k) blocks
