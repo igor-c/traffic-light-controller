@@ -47,6 +47,8 @@ Client commands on RPi (change to the Git directory first: `cd controller`):
   vi config.txt
 - Debug client from command line:
   sudo gdb ./client ./
+- Force lights to show a particular scenario (from command line):
+  ./client ./ lsd
 
 Git commands:
 * Make a new commit
