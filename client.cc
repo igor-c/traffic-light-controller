@@ -407,15 +407,27 @@ static void UpdateRandomTrafficLights(LightAnimations* current_lights,
     return;
   }
 
-  // Wait for 5.5 seconds for the trip to start.
-  if (ped_frames_shown < 5500 / kHoldTimeMs) {
-    return;
+  if (current_lights->full_random) {
+    if (current_lights->side1_pedestrian_up)
+      return;
+  } else {
+    // Wait for 5.5 seconds for the trip to start.
+    if (ped_frames_shown < 5500 / kHoldTimeMs) {
+      return;
+    }
   }
 
   UpdateRandomTrafficLight(&current_lights->side1_pedestrian_up,
                            current_lights);
   UpdateRandomTrafficLight(&current_lights->side2_pedestrian_up,
                            current_lights);
+
+  if (current_lights->full_random) {
+    UpdateRandomTrafficLight(&current_lights->side1_pedestrian_down,
+                             current_lights);
+    UpdateRandomTrafficLight(&current_lights->side2_pedestrian_down,
+                             current_lights);
+  }
 
   UpdateRandomTrafficLight(&current_lights->side1_traffic_up, current_lights);
   UpdateRandomTrafficLight(&current_lights->side1_traffic_middle,
@@ -662,6 +674,9 @@ static std::vector<AnimationState> LoadAnimationSet(const std::string& name) {
   for (size_t i = 0; i < collection->animations.size(); ++i) {
     AnimationState state(&collection->animations[i]);
     state.is_cyclic = true;
+    if (collection->name == "birthday") {
+      state.rotation = -90;
+    }
     result.push_back(state);
   }
 
@@ -681,6 +696,10 @@ static bool LoadOneAnimation(AnimationState* dst,
     printf("Unable to find animation '%s' in '%s'\n", name.c_str(),
            collection->name.c_str());
     return false;
+  }
+
+  if (collection->name == "birthday") {
+    dst->rotation = -90;
   }
 
   return true;

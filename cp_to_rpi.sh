@@ -12,14 +12,14 @@ if [ -z "$ADDR" ]; then
   exit 1
 fi
 
-if [ $ADDR="all" ]; then
+if [ "$ADDR" = "all" ]; then
   ADDRS=`cat all_pi`
 else
   ADDRS=$ADDR
 fi
 
 for x in "$ADDRS"; do
-  DEST="pi@$x:/home/pi/traffic-light-controller/client/"
+  DEST="pi@$x:/home/pi/controller/"
   sshpass -p "$PASSWORD" scp -p *.cc *.h Makefile $DEST
   # sshpass -p "$PASSWORD" scp -p client $DEST
   # sshpass -p "$PASSWORD" scp -p config.txt $DEST
