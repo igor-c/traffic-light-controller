@@ -26,7 +26,8 @@
   } while (retvar == -1 && errno == EINTR);
 
 constexpr char KMulticastAddr[] = "239.255.223.01";
-constexpr int kUdpPort = 0xdf0f;
+constexpr int kUdpPortNormal = 0xdf0e;
+constexpr int kUdpPortOverride = 0xdf0f;
 constexpr uint32_t kUdpMagic = 0xdeafbeef;
 
 constexpr int64_t kMaxReconnectDelayMs = 1000;
@@ -42,7 +43,8 @@ static int64_t last_connect_attempt_time = -1;
 static std::vector<std::vector<uint8_t>> send_buffer;
 static std::vector<uint8_t> receive_buffer;
 
-static int udp_socket = -1;
+static int udp_socket_normal = -1;
+static int udp_socket_override = -1;
 static uint8_t udp_receive_buffer[65536];
 static uint8_t udp_send_buffer[65536];
 
@@ -258,31 +260,54 @@ void ConnectToServerIfNecessary() {
 }
 
 void CloseUdp() {
-  if (udp_socket >= 0) {
-    close(udp_socket);
-    udp_socket = -1;
+  if (udp_socket_normal >= 0) {
+    close(udp_socket_normal);
+    udp_socket_normal = -1;
+  }
+  if (udp_socket_override >= 0) {
+    close(udp_socket_override);
+    udp_socket_override = -1;
   }
 }
 
-bool TryConnectUdp() {
-  if (udp_socket >= 0) {
+static bool TryConnectUdp(bool is_override) {
+  int* udp_socket_fd;
+  int port;
+  if (is_override) {
+    udp_socket_fd = &udp_socket_override;
+    port = kUdpPortOverride;
+  } else {
+    udp_socket_fd = &udp_socket_normal;
+    port = kUdpPortNormal;
+  }
+
+  if (*udp_socket_fd >= 0) {
     return true;
   }
 
-  static uint64_t last_connect_time = 0;
-  if (CurrentTimeMillis() - last_connect_time < 5000) {
-    return false;
+  if (is_override) {
+    static uint64_t last_connect_time = 0;
+    if (CurrentTimeMillis() - last_connect_time < 5000) {
+      return false;
+    }
+    last_connect_time = CurrentTimeMillis();
+  } else {
+    static uint64_t last_connect_time = 0;
+    if (CurrentTimeMillis() - last_connect_time < 5000) {
+      return false;
+    }
+    last_connect_time = CurrentTimeMillis();
   }
-  last_connect_time = CurrentTimeMillis();
 
-  udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
-  if (udp_socket < 0) {
+  *udp_socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (*udp_socket_fd < 0) {
     fprintf(stderr, "can't create client socket\n");
+    CloseUdp();
     return false;
   }
 
   int optval = 1;
-  if (setsockopt(udp_socket, SOL_SOCKET, SO_REUSEADDR, &optval,
+  if (setsockopt(*udp_socket_fd, SOL_SOCKET, SO_REUSEADDR, &optval,
                  sizeof(optval)) < 0) {
     fprintf(stderr, "can't set reuseaddr option on socket: %s\n",
             strerror(errno));
@@ -290,29 +315,31 @@ bool TryConnectUdp() {
     return false;
   }
 
-  int flags = fcntl(udp_socket, F_GETFL) | O_NONBLOCK;
-  if (fcntl(udp_socket, F_SETFL, flags) < 0) {
+  int flags = fcntl(*udp_socket_fd, F_GETFL) | O_NONBLOCK;
+  if (fcntl(*udp_socket_fd, F_SETFL, flags) < 0) {
     fprintf(stderr, "can't set socket to nonblocking mode: %s\n",
             strerror(errno));
     CloseUdp();
     return false;
   }
 
-  u_char loop = 0;
-  if (setsockopt(udp_socket, IPPROTO_IP, IP_MULTICAST_LOOP, &loop,
-                 sizeof(loop)) < 0) {
-    fprintf(stderr, "can't disable IP_MULTICAST_LOOP %s\n", strerror(errno));
-    CloseUdp();
-    return false;
+  if (port == kUdpPortNormal) {
+    u_char loop = 0;
+    if (setsockopt(*udp_socket_fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop,
+                   sizeof(loop)) < 0) {
+      fprintf(stderr, "can't disable IP_MULTICAST_LOOP %s\n", strerror(errno));
+      CloseUdp();
+      return false;
+    }
   }
 
   sockaddr_in if_addr;
   memset(&if_addr, 0, sizeof(if_addr));
   if_addr.sin_family = AF_INET;
-  if_addr.sin_port = htons((unsigned short)kUdpPort);
+  if_addr.sin_port = htons((unsigned short)port);
   if_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  if (bind(udp_socket, (struct sockaddr*)&if_addr, sizeof(if_addr)) < 0) {
-    fprintf(stderr, "can't bind client socket to port %d: %s\n", kUdpPort,
+  if (bind(*udp_socket_fd, (struct sockaddr*)&if_addr, sizeof(if_addr)) < 0) {
+    fprintf(stderr, "can't bind client socket to port %d: %s\n", port,
             strerror(errno));
     CloseUdp();
     return false;
@@ -322,7 +349,7 @@ bool TryConnectUdp() {
   mc_group.imr_multiaddr.s_addr = inet_addr(KMulticastAddr);
   mc_group.imr_interface.s_addr =
       htonl(INADDR_ANY);  // inet_addr("203.106.93.94");
-  if (setsockopt(udp_socket, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mc_group,
+  if (setsockopt(*udp_socket_fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mc_group,
                  sizeof(mc_group)) < 0) {
     fprintf(stderr, "can't join multicast group %s: %s\n", KMulticastAddr,
             strerror(errno));
@@ -330,14 +357,17 @@ bool TryConnectUdp() {
     return false;
   }
 
-  fprintf(stderr, "Connected, bound to port %d, multicast group %s\n", kUdpPort,
+  fprintf(stderr, "Connected, bound to port %d, multicast group %s\n", port,
           KMulticastAddr);
   return true;
 }
 
-uint8_t* ReceiveUdp(size_t* size) {
-  *size = 0;
-  if (!TryConnectUdp())
+bool TryConnectUdp() {
+  return TryConnectUdp(false) && TryConnectUdp(true);
+}
+
+static uint8_t* ReceiveUdp(size_t* size, int udp_socket) {
+  if (udp_socket < 0)
     return nullptr;
 
   sockaddr_in serveraddr;
@@ -367,7 +397,19 @@ uint8_t* ReceiveUdp(size_t* size) {
   return udp_receive_buffer + sizeof(uint32_t);
 }
 
-bool BroadcastUdp(void* buf, size_t size) {
+uint8_t* ReceiveUdp(size_t* size) {
+  *size = 0;
+  if (!TryConnectUdp())
+    return nullptr;
+
+  uint8_t* result = ReceiveUdp(size, udp_socket_normal);
+  if (result || *size)
+    return result;
+
+  return ReceiveUdp(size, udp_socket_override);
+}
+
+bool BroadcastUdp(void* buf, size_t size, bool is_override_port) {
   if (size > sizeof(udp_send_buffer) - sizeof(uint32_t)) {
     fprintf(stderr, "Broadcast data is too large\n");
     return false;
@@ -376,10 +418,20 @@ bool BroadcastUdp(void* buf, size_t size) {
   if (!TryConnectUdp())
     return false;
 
+  int udp_socket_fd;
+  int port;
+  if (is_override_port) {
+    udp_socket_fd = udp_socket_override;
+    port = kUdpPortOverride;
+  } else {
+    udp_socket_fd = udp_socket_normal;
+    port = kUdpPortNormal;
+  }
+
   sockaddr_in addr;
   memset(&addr, 0, sizeof(addr));
   addr.sin_family = AF_INET;
-  addr.sin_port = htons((unsigned short)kUdpPort);
+  addr.sin_port = htons((unsigned short)port);
   addr.sin_addr.s_addr = inet_addr(KMulticastAddr);
 
   ssize_t size_to_send = size + sizeof(uint32_t);
@@ -388,14 +440,14 @@ bool BroadcastUdp(void* buf, size_t size) {
   memcpy(udp_send_buffer + sizeof(uint32_t), buf, size);
 
   ssize_t sent_size;
-  CALL_RETRY(sent_size, sendto(udp_socket, udp_send_buffer, size_to_send, 0,
+  CALL_RETRY(sent_size, sendto(udp_socket_fd, udp_send_buffer, size_to_send, 0,
                                (struct sockaddr*)&addr, sizeof(addr)));
 
   if (sent_size != size_to_send) {
     fprintf(stderr,
             "sendto broadcast of %d bytes on port %d, socket %d, "
             "result %d: %s\n",
-            size, kUdpPort, udp_socket, size_to_send, strerror(errno));
+            size, port, udp_socket_fd, size_to_send, strerror(errno));
     CloseUdp();
     return false;
   }

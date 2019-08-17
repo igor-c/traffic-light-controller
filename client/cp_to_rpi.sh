@@ -24,4 +24,5 @@ for x in "$ADDRS"; do
   # sshpass -p "$PASSWORD" scp -p client $DEST
   # sshpass -p "$PASSWORD" scp -p config.txt $DEST
   # sshpass -p "$PASSWORD" scp -p images/still/* $DEST/images/still/
+  # sshpass -p "$PASSWORD" scp -p images/birthday/* $DEST/images/birthday/
 done

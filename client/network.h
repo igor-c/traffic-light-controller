@@ -16,4 +16,4 @@ std::vector<uint8_t> ReadSocketCommand();
 bool TryConnectUdp();
 void CloseUdp();
 uint8_t* ReceiveUdp(size_t* size);
-bool BroadcastUdp(void* buf, size_t size);
+bool BroadcastUdp(void* buf, size_t size, bool is_override_port);

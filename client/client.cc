@@ -18,6 +18,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "image.h"
@@ -48,6 +49,7 @@ struct ScenarioSpec {
   std::string traffic_up;
   std::string traffic_middle;
   std::string traffic_down;
+  bool full_random = false;
 
   ScenarioSpec(const std::string& name,
                const std::string& ped_move_up,
@@ -65,6 +67,7 @@ struct Scenario {
   AnimationState traffic_middle;
   AnimationState traffic_down;
   std::vector<AnimationState> traffic_random;
+  bool full_random = false;
 
   Scenario(const std::string& name) : name(name) {}
 };
@@ -73,6 +76,7 @@ struct UdpMessage {
   uint64_t time_relative_to_anchor_ms;
   char next_scenario[256];
   uint8_t next_has_stop_cat;
+  uint8_t is_override;
 };
 
 static ClientConfig client_config;
@@ -86,6 +90,7 @@ static bool is_traffic_light_started = false;
 
 static const Scenario* next_scenario = nullptr;
 static bool next_has_stop_cat = false;
+static bool next_has_override = false;
 
 static AnimationState red_light_animation;
 static AnimationState stop_cat_animation;
@@ -95,6 +100,8 @@ static bool should_interrupt_animation_loop = false;
 static bool has_received_signal = false;
 
 static const Scenario* FindScenario(const std::string& name);
+
+constexpr uint64_t kNoTimeDiff = 11111111;
 
 //------------------------SERVER-------------------------------------------
 
@@ -113,19 +120,14 @@ static void quit(int val) {
   }
 }
 
-static void ProcessUdpCommand(uint8_t* data, size_t size) {
-  if (size != sizeof(UdpMessage)) {
-    fprintf(stderr, "Wrong UDP message size %d\n", (int)size);
-    return;
-  }
-
-  UdpMessage* msg = (UdpMessage*)data;
-
-  // Compensate remote time for average processing delay.
-  msg->time_relative_to_anchor_ms += kHoldTimeMs / 2;
+static void ProcessUdpCommand(const UdpMessage& msg) {
   uint64_t old_anchor = transport_anchor_time_ms;
-  transport_anchor_time_ms =
-      CurrentTimeMillis() - msg->time_relative_to_anchor_ms;
+
+  if (msg.time_relative_to_anchor_ms != kNoTimeDiff) {
+    // Also compensate remote time for average processing delay.
+    transport_anchor_time_ms =
+        CurrentTimeMillis() - msg.time_relative_to_anchor_ms - kHoldTimeMs / 2;
+  }
 
   int time_diff = 0;
   if (transport_anchor_time_ms > old_anchor) {
@@ -134,15 +136,18 @@ static void ProcessUdpCommand(uint8_t* data, size_t size) {
     time_diff = -(old_anchor - transport_anchor_time_ms);
   }
 
-  printf("Received UDP scenario '%s', stop_cat=%d, anchor_diff=%d\n",
-         msg->next_scenario, (int)msg->next_has_stop_cat, time_diff);
+  printf(
+      "Received UDP scenario '%s', stop_cat=%d, override=%d, anchor_diff=%d\n",
+      msg.next_scenario, (int)msg.next_has_stop_cat, (int)msg.is_override,
+      time_diff);
 
-  next_scenario = FindScenario(msg->next_scenario);
+  next_scenario = FindScenario(msg.next_scenario);
   if (!next_scenario) {
-    fprintf(stderr, "Unknown UDP scenario name %s\n", msg->next_scenario);
+    fprintf(stderr, "Unknown UDP scenario name %s\n", msg.next_scenario);
   }
 
-  next_has_stop_cat = msg->next_has_stop_cat;
+  next_has_stop_cat = msg.next_has_stop_cat;
+  next_has_override = msg.is_override;
 }
 
 void ReadSocketAndExecuteCommands() {
@@ -167,7 +172,13 @@ void ReadSocketAndExecuteCommands() {
   }
 
   if (last_udp_data && last_udp_size) {
-    ProcessUdpCommand(last_udp_data, last_udp_size);
+    if (last_udp_size != sizeof(UdpMessage)) {
+      fprintf(stderr, "Wrong UDP message size %d\n", (int)last_udp_size);
+      return;
+    }
+
+    UdpMessage* msg = (UdpMessage*)last_udp_data;
+    ProcessUdpCommand(*msg);
   }
 }
 
@@ -221,6 +232,7 @@ struct LightAnimations {
   AnimationState side2_pedestrian_down;
 
   std::vector<AnimationState> traffic_random;
+  bool full_random = false;
 
   bool has_future_pedestrian = false;
   AnimationState future_pedestrian_up;
@@ -342,7 +354,10 @@ static LightAnimations GetPedestrianStateAnimations() {
   result.side2_traffic_middle = scenario2->traffic_middle;
   result.side2_traffic_down = scenario2->traffic_down;
 
-  if (!scenario1->traffic_random.empty()) {
+  if (scenario1->full_random) {
+    result.full_random = scenario1->full_random;
+    result.traffic_random = scenario1->traffic_random;
+  } else if (!scenario1->traffic_random.empty()) {
     result.traffic_random = scenario1->traffic_random;
   } else if (!scenario2->traffic_random.empty()) {
     result.traffic_random = scenario2->traffic_random;
@@ -435,44 +450,79 @@ static const Scenario* FindScenario(const std::string& name) {
   return nullptr;
 }
 
+static void Broadcast(const std::string& scenario_name,
+                      bool has_stop_cat,
+                      bool is_override) {
+  UdpMessage msg;
+  if (is_override) {
+    msg.time_relative_to_anchor_ms = kNoTimeDiff;
+  } else {
+    msg.time_relative_to_anchor_ms =
+        CurrentTimeMillis() - transport_anchor_time_ms;
+  }
+
+  msg.next_has_stop_cat = has_stop_cat;
+  msg.is_override = is_override;
+
+  strcpy(msg.next_scenario, scenario_name.c_str());
+
+  printf("Broadcasting picked scenario '%s', stop_cat=%d, stagger=%d\n",
+         msg.next_scenario, (int)msg.next_has_stop_cat,
+         (int)(CurrentTimeMillis() - transport_anchor_time_ms));
+
+  BroadcastUdp(&msg, sizeof(msg), is_override);
+}
+
+static bool IsEnabled(const Scenario* scenario) {
+  if (!scenario)
+    return false;
+
+  if (scenario->name == "birthday") {
+    time_t t = time(nullptr);
+    struct tm tm = *localtime(&t);
+    if (tm.tm_mon + 1 == 9 && tm.tm_mday == 1) {
+      return true;
+    }
+
+    return false;
+  }
+
+  return true;
+}
+
 static void PickNextPedestrian() {
   if (next_scenario) {
     scenario_main = next_scenario;
     scenario_main_stop_cat = next_has_stop_cat;
     next_scenario = nullptr;
     next_has_stop_cat = false;
+    next_has_override = false;
     return;
   }
 
   if (!scenario_main && !client_config.first_scenario.empty()) {
     scenario_main = FindScenario(client_config.first_scenario);
   } else {
-    if (client_config.is_sequential) {
-      scenario_main =
-          PickNextSequential<Scenario>(all_scenarios, scenario_main);
-    } else {
-      scenario_main = PickNextRandom<Scenario>(all_scenarios, scenario_main);
+    for (int i = 0; i < 50; ++i) {
+      if (client_config.is_sequential) {
+        scenario_main =
+            PickNextSequential<Scenario>(all_scenarios, scenario_main);
+      } else {
+        scenario_main = PickNextRandom<Scenario>(all_scenarios, scenario_main);
+      }
+
+      if (IsEnabled(scenario_main))
+        break;
     }
   }
 
   scenario_main_stop_cat = IsRandomPercentile(9);
 
-  UdpMessage msg;
-  msg.time_relative_to_anchor_ms =
-      CurrentTimeMillis() - transport_anchor_time_ms;
-  msg.next_has_stop_cat = scenario_main_stop_cat;
-
   if (scenario_main) {
-    strcpy(msg.next_scenario, scenario_main->name.c_str());
+    Broadcast(scenario_main->name, scenario_main_stop_cat, false);
   } else {
-    msg.next_scenario[0] = 0;
+    Broadcast("", scenario_main_stop_cat, false);
   }
-
-  printf("Broadcasting picked scenario '%s', stop_cat=%d, stagger=%d\n",
-         msg.next_scenario, (int)msg.next_has_stop_cat,
-         (int)(CurrentTimeMillis() - transport_anchor_time_ms));
-
-  BroadcastUdp(&msg, sizeof(msg));
 }
 
 static void TryRunAnimationLoop() {
@@ -548,7 +598,8 @@ static void TryRunAnimationLoop() {
               (current_lights.future_pedestrian_up
                    ? current_lights.future_pedestrian_up.animation->name.c_str()
                    : ""));
-          if (current_lights.max_pedestrian_frame_count == 1) {
+          if (current_lights.max_pedestrian_frame_count == 1 ||
+              current_lights.full_random) {
             // For whatever reason - we have no animation running.
             // Just keep the colors for the regular interval.
             current_lights.max_pedestrian_frame_count = 236;
@@ -674,7 +725,14 @@ static void LoadScenario(const ScenarioSpec& spec) {
     success = false;
   }
 
-  if (!spec.traffic_random.empty()) {
+  scenario.full_random = spec.full_random;
+  if (scenario.full_random) {
+    scenario.traffic_random = LoadAnimationSet(spec.name);
+    if (scenario.traffic_random.empty()) {
+      fprintf(stderr, "Unable to find animation set '%s'\n", spec.name.c_str());
+      success = false;
+    }
+  } else if (!spec.traffic_random.empty()) {
     scenario.traffic_random = LoadAnimationSet(spec.traffic_random);
     if (scenario.traffic_random.empty()) {
       fprintf(stderr, "Unable to find animation set '%s'\n",
@@ -731,6 +789,10 @@ static void LoadAllScenarios() {
   party.traffic_middle = "equalizer_middle";
   party.traffic_down = "equalizer_down";
   LoadScenario(party);
+
+  ScenarioSpec birthday("birthday", "", "");
+  birthday.full_random = true;
+  LoadScenario(birthday);
 }
 
 static void ReportUnknownConfig(const std::string& line) {
@@ -829,6 +891,12 @@ int main(int argc, const char* argv[]) {
   }
 
   client_config = ReadConfig(full_app_path);
+
+  if (argc > 2) {
+    TryConnectUdp();
+    Broadcast(argv[2], true, true);
+    return 0;
+  }
 
   //------------------------ANIMATION----------------------------------------
   //
