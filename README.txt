@@ -37,6 +37,10 @@ System commands on RPi:
   ./examples-api-use/demo -D 5 --led-gpio-mapping=adafruit-hat --led-chain=10 --led-multiplexing=2 --led-rgb-sequence=BGR
 
 Client commands on RPi (change to the Git directory first: `cd controller`):
+- Find out which traffic light pole this IP belongs to:
+  cat config.txt
+  ... First line has "# Light A", "Light B", etc
+  ... locate the same label on the pedestrian light w/ power supply
 - Kill background client:
   ./kill_all.sh
 - Rebuild code:
