@@ -1,5 +1,0 @@
-<RCC>
-    <qresource prefix="/script">
-        <file>pySFTP.py</file>
-    </qresource>
-</RCC>
