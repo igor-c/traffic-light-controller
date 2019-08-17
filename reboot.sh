@@ -5,7 +5,6 @@ set -e
 PASSWORD="raspberry"
 ADDR=$1
 # ADDR="192.168.88.54"
-# ADDR="192.168.1.55"
 
 if [ -z "$ADDR" ]; then
   echo "Must provide an address"
@@ -18,10 +17,11 @@ else
   ADDRS=$ADDR
 fi
 
-for x in "$ADDRS"; do
+while read x; do
   SSH_HOST="pi@$x"
   DEST="$SSH_HOST:/home/pi/controller/"
-  sshpass -p "$PASSWORD" ssh $SSH_HOST 'sudo killall client'
-  sshpass -p "$PASSWORD" scp -p client $DEST
+  # echo "$PASSWORD $SSH_HOST"
+  #set +e
   sshpass -p "$PASSWORD" ssh $SSH_HOST 'sudo reboot' &
-done
+  #set -e
+done <<< "$ADDRS"

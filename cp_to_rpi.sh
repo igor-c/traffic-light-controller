@@ -18,11 +18,11 @@ else
   ADDRS=$ADDR
 fi
 
-for x in "$ADDRS"; do
+while read x; do
   DEST="pi@$x:/home/pi/controller/"
   sshpass -p "$PASSWORD" scp -p *.cc *.h Makefile $DEST
   # sshpass -p "$PASSWORD" scp -p client $DEST
   # sshpass -p "$PASSWORD" scp -p config.txt $DEST
   # sshpass -p "$PASSWORD" scp -p images/still/* $DEST/images/still/
   # sshpass -p "$PASSWORD" scp -p images/birthday/* $DEST/images/birthday/
-done
+done <<< "$ADDRS"

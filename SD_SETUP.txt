@@ -53,9 +53,11 @@
 
 Card backup:
   sudo dd if=/dev/sdc bs=1M | gzip > ./rpi.gz.dd
+  sudo dd if=/dev/sdc bs=1M iflag=fullblock count=3000 | gzip > ./rpi_3g.gz.dd
 
 Card restore:
-  gzip -dc ./rpi.gz.dd | sudo dd of=/dev/sdc
+  gzip -dc ./rpi.gz.dd | sudo dd of=/dev/sdc bs=1M
+  gzip -dc ./rpi_3g.gz.dd | sudo dd of=/dev/sdc bs=1M
 
 
 ================

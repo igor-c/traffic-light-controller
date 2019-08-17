@@ -6,3 +6,4 @@ Git commands:
 * Fetch latest code
   git fetch origin && git checkout origin/master
 
+Resizing the filesystem on /dev/sdc2 to 716800 (4k) blocks
