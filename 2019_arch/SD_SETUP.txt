@@ -1,0 +1,94 @@
+
+- Install Raspbian Lite
+  * Download Raspbian Stretch Lite:
+    wget https://downloads.raspberrypi.org/raspbian_lite/images/raspbian_lite-2019-04-09/2019-04-08-raspbian-stretch-lite.zip
+  * Insert an 8GB SD card
+  * To reformat SD card
+    * sudo dd if=/dev/zero of=/dev/sdXXX bs=16M count=4
+    * sudo fdisk /dev/sdXXX
+    * Press "n", then keep pressing "enter" until it's all done
+    * Press "w", then "enter"
+    * sudo mkfs.ext4 /dev/sdXXX
+  * Copy Raspbian to SD card:
+    unzip -p 2019-04-08-raspbian-stretch-lite.zip | sudo dd of=/dev/sdXXX bs=4M conv=fsync
+  * Remove and reinsert the SD card
+  * Edit config:
+    vi /media/$USER/boot/config.txt
+      Add: enable_uart=1
+    touch /media/$USER/boot/ssh
+    sudo vi /etc/modprobe.d/alsa-blacklist.conf
+      Add: blacklist snd_bcm2835
+    sudo vi /media/$USER/rootfs/etc/wpa_supplicant/wpa_supplicant.conf
+      network={
+        ssid="PEREKRESTOK"
+        psk="88888888"
+      }
+  * Move SD card into Raspberry Pi
+  * Connect via console:
+    * Connect console cable's black/white/green to pins 3/4/5
+      (https://learn.adafruit.com/adafruits-raspberry-pi-lesson-5-using-a-console-cable/connect-the-lead)
+    * sudo screen /dev/ttyUSB0 115200
+    * If bootup gets stuck - SSD card may need replacing
+    * Log in as pi/raspberry
+  * Install various packages on RPi:
+    sudo apt-get install build-essential git imagemagick libmagick-dev wiringpi vim
+    git clone https://github.com/hzeller/rpi-rgb-led-matrix
+  * Install Java
+    Download the light version of "Linux ARMv7&8 32 Bit HardFloat"
+      from https://bell-sw.com/pages/java-12.0.1/
+      wget https://download.bell-sw.com/java/12.0.1/bellsoft-jdk12.0.1-linux-arm32-vfp-hflt-lite.deb
+    sudo apt install ./bellsoft-jdk12.0.1-linux-arm32-vfp-hflt-lite.deb
+    sudo apt --fix-broken install
+  * Test the matrix, run on the RPi:
+      cd rpi-rgb-led-matrix
+      make -C examples-api-use
+      sudo ./examples-api-use/demo --led-gpio-mapping adafruit-hat -D3
+  * Get the code:
+    git clone https://github.com/igor-c/traffic-light-controller.git
+    cd traffic-light-controller/client
+    make clean client
+  * Copy the binary:
+    scp client/target/client-1.0-SNAPSHOT.jar pi@192.168.1.222:/home/pi/
+
+
+Card backup:
+  sudo dd if=/dev/sdc bs=1M | gzip > ./rpi.gz.dd
+  sudo dd if=/dev/sdc bs=1M iflag=fullblock count=3000 | gzip > ./rpi_3g.gz.dd
+
+Card restore:
+  gzip -dc ./rpi.gz.dd | sudo dd of=/dev/sdc bs=1M
+  gzip -dc ./rpi_3g.gz.dd | sudo dd of=/dev/sdc bs=1M
+
+
+================
+Random stuff:
+
+echo "options 8192cu rtw_power_mgnt=0 rtw_enusbss=0" | sudo tee --append /etc/modprobe.d/8192cu.conf
+
+To search for SSH-enabled port on local net:
+  sudo nmap -sS -p 22 192.168.1.0/24
+
+References:
+* https://learn.adafruit.com/pi-wifi-radio/raspberry-pi-setup-1-of-3
+
+curl -s http://archive.raspbian.org/raspbian/dists/stretch/main/binary-armhf/Packages.xz | xz -d | grep '^Package:' | cut -d ' ' -f 2 > rpi_packages
+curl -s http://archive.raspbian.org/raspbian/dists/stretch/non-free/binary-armhf/Packages.xz | xz -d | grep '^Package:' | cut -d ' ' -f 2 > rpi_packages_non_free
+
+sudo apt-get update
+sudo apt-get install oracle-java8-jdk-headles
+
+Compiling traffic-light-controller:
+* Install prerequisites:
+    sudo apt-get install build-essential git
+* Install ImageMagick:
+    wget https://www.imagemagick.org/download/ImageMagick.tar.gz
+    cd ImageMagick-7.0.8-53
+    ./configure 
+    make -j20
+    sudo make install
+    sudo ldconfig /usr/local/lib
+* Compile traffic-light-controller:
+    git clone https://github.com/igor-c/traffic-light-controller.git
+    cd traffic-light-controller
+
+Resizing the filesystem on /dev/sdc2 to 716800 (4k) blocks
