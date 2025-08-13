@@ -9,14 +9,40 @@ Commands on Laptop:
 - Find all PRi's on the network and update the list on disk:
   ./find_all.sh >all_pi
 - Remote reboot (or uncomment other commands inside):
-  ./reboot.sh 192.168.88.227
+  ./reboot.sh 192.168.88.55
   ./reboot.sh all
 - SSH to a RPi:
   sshpass -p "raspberry" ssh pi@192.168.88.227
 - Remote reboot:
-  sshpass -p "raspberry" ssh pi@192.168.88.227 sudo reboot
+  sshpass -p "raspberry" ssh pi@192.168.88.55 sudo reboot
 - Some other scripts exist to copy "client" binary fro one RPi to Laptop
   and then to copy "client" to all RPi's
+
+
+UART connection
+  Wires at top row, counting from left:
+    3 = black
+    4 = white
+    5 = green
+  sudo screen /dev/ttyUSB0 115200
+
+
+sudo apt-get install sshpass net-tools
+
+
+sudo ifup wlan0
+
+
+Once: ssh pi@192.168.88.55
+
+sshpass -p "raspberry" ssh pi@192.168.88.55
+
+sshpass -p "raspberry" ssh pi@192.168.88.55 sudo reboot
+
+sshpass -p "raspberry" ssh pi@192.168.88.55 sudo shutdown -h now
+
+sshpass -p "raspberry" scp client.cc pi@192.168.88.55:/home/pi/controller/client.cc
+
 
 System commands on RPi:
 - Show system time: date

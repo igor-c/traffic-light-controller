@@ -1,11 +1,10 @@
 # matrix = chinese
 matrix = adafruit
 
-traffic_light_id = 0
-
-is_sequential = 1
+is_sequential = 0
 first_scenario = lsd
 
-red_green_light_sec = 20
-yellow_light_sec = 2
+red_green_light_sec = 3
+yellow_light_sec = 1
 
+stop_cat_chance_percentile = 15

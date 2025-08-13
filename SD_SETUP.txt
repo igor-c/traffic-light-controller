@@ -1,7 +1,7 @@
 
 - Install Raspbian Lite
-  * Download Raspbian Stretch Lite:
-    wget https://downloads.raspberrypi.org/raspbian_lite/images/raspbian_lite-2019-04-09/2019-04-08-raspbian-stretch-lite.zip
+  * Download Raspbian Lite:
+    wget https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2025-05-13/2025-05-13-raspios-bookworm-arm64-lite.img.xz
   * Insert an 8GB SD card
   * To reformat SD card
     * sudo dd if=/dev/zero of=/dev/sdXXX bs=16M count=4
@@ -10,15 +10,18 @@
     * Press "w", then "enter"
     * sudo mkfs.ext4 /dev/sdXXX
   * Copy Raspbian to SD card:
-    unzip -p 2019-04-08-raspbian-stretch-lite.zip | sudo dd of=/dev/sdXXX bs=4M conv=fsync
+    xz -d --stdout 2025-05-13-raspios-bookworm-arm64-lite.img.xz | sudo dd of=/dev/sdXXX bs=4M conv=fsync status=progress
   * Remove and reinsert the SD card
   * Edit config:
-    vi /media/$USER/boot/config.txt
+    vi /media/$USER/bootfs/config.txt
       Add: enable_uart=1
-    touch /media/$USER/boot/ssh
-    sudo vi /etc/modprobe.d/alsa-blacklist.conf
+    touch /media/$USER/bootfs/ssh
+    sudo vi /media/$USER/rootfs/etc/shadow
+      Change: pi:$6$xyz$Ehaa6Z1cWhFitJ6x7uy.lOhdIEkPvaHpj0dbaLIa10Jd3RWwywSycD.eBFAeYgoUU.sJhWG4/ir2yOTEMMmYY0:19797:0:99999:7:::
+    sudo vi /media/$USER/rootfs/etc/modprobe.d/alsa-blacklist.conf
       Add: blacklist snd_bcm2835
     sudo vi /media/$USER/rootfs/etc/wpa_supplicant/wpa_supplicant.conf
+      ctrl_interface=/var/run/wpa_supplicant
       network={
         ssid="PEREKRESTOK"
         psk="88888888"
@@ -30,25 +33,36 @@
     * sudo screen /dev/ttyUSB0 115200
     * If bootup gets stuck - SSD card may need replacing
     * Log in as pi/raspberry
+  * Update the system
+    sudo apt update
+    sudo apt upgrade -y
+  * Global config
+    sudo raspi-config nonint do_wifi_country US
+    sudo nmcli con add type wifi con-name "PEREKRESTOK" ifname wlan0 ssid "PEREKRESTOK" -- wifi-sec.key-mgmt wpa-psk wifi-sec.psk "88888888"
+    # sudo iwlist wlan0 scan | grep PEREK
+  * Assign static IP in router DHCP config
+    192.168.88.55
   * Install various packages on RPi:
-    sudo apt-get install build-essential git imagemagick libmagick-dev wiringpi vim
+    sudo apt-get install build-essential git vim imagemagick libmagick-dev
     git clone https://github.com/hzeller/rpi-rgb-led-matrix
-  * Install Java
-    Download the light version of "Linux ARMv7&8 32 Bit HardFloat"
-      from https://bell-sw.com/pages/java-12.0.1/
-      wget https://download.bell-sw.com/java/12.0.1/bellsoft-jdk12.0.1-linux-arm32-vfp-hflt-lite.deb
-    sudo apt install ./bellsoft-jdk12.0.1-linux-arm32-vfp-hflt-lite.deb
-    sudo apt --fix-broken install
+  * Install WiringPi
+    git clone https://github.com/wbeebe/WiringPi.git
+    cd WiringPi
+    ./build
+    sudo ldconfig
   * Test the matrix, run on the RPi:
       cd rpi-rgb-led-matrix
       make -C examples-api-use
       sudo ./examples-api-use/demo --led-gpio-mapping adafruit-hat -D3
   * Get the code:
     git clone https://github.com/igor-c/traffic-light-controller.git
-    cd traffic-light-controller/client
+    cd traffic-light-controller
     make clean client
-  * Copy the binary:
-    scp client/target/client-1.0-SNAPSHOT.jar pi@192.168.1.222:/home/pi/
+
+
+Troubleshooting:
+  * If serial port has gibberish, or you see "undervoltage" messages
+    - Replace the power cable
 
 
 Card backup:
@@ -56,8 +70,8 @@ Card backup:
   sudo dd if=/dev/sdc bs=1M iflag=fullblock count=3000 | gzip > ./rpi_3g.gz.dd
 
 Card restore:
-  gzip -dc ./rpi.gz.dd | sudo dd of=/dev/sdc bs=1M
-  gzip -dc ./rpi_3g.gz.dd | sudo dd of=/dev/sdc bs=1M
+  gzip -dc ./rpi.gz.dd | sudo dd of=/dev/sdc bs=1M conv=fsync status=progress
+  gzip -dc ./rpi_3g.gz.dd | sudo dd of=/dev/sdc bs=1M conv=fsync status=progress
 
 
 ================
@@ -77,6 +91,8 @@ curl -s http://archive.raspbian.org/raspbian/dists/stretch/non-free/binary-armhf
 sudo apt-get update
 sudo apt-get install oracle-java8-jdk-headles
 
+etc/shadow password generated as `openssl passwd -6 -salt xyz raspberry`
+
 Compiling traffic-light-controller:
 * Install prerequisites:
     sudo apt-get install build-essential git
@@ -92,3 +108,4 @@ Compiling traffic-light-controller:
     cd traffic-light-controller
 
 Resizing the filesystem on /dev/sdc2 to 716800 (4k) blocks
+

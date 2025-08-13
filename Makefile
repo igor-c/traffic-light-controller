@@ -1,4 +1,4 @@
-CXXFLAGS=-Wall -O3 -g -Wextra -Wno-unused-parameter -pedantic
+CXXFLAGS=-Wall -O3 -g -Wextra -Wno-unused-parameter -Wno-deprecated-declarations -pedantic
 OBJECTS=client.o image.o network.o
 BINARIES=client
 

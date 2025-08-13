@@ -33,39 +33,32 @@ struct ClientConfig {
   // TODO(igorc): Implement blinking transport light.
   uint64_t red_green_light_ms = 20000;
   uint64_t yellow_light_ms = 3000;
-  int traffic_light_id = 0;
+  int stop_cat_chance_percentile = 15;
   bool is_sequential = false;
   std::string first_scenario;
-  // std::map<std::string, std::string>
 };
 
 struct ScenarioSpec {
   std::string name;
-  std::string ped_move_up;
-  std::string ped_move_down;
-  std::string ped_stop_up;
-  std::string ped_stop_down;
+  std::string upper_file;
+  std::string middle_file;
+  std::string bottom_file;
   std::string traffic_random;
-  std::string traffic_up;
-  std::string traffic_middle;
-  std::string traffic_down;
   bool full_random = false;
 
   ScenarioSpec(const std::string& name,
-               const std::string& ped_move_up,
-               const std::string& ped_move_down)
-      : name(name), ped_move_up(ped_move_up), ped_move_down(ped_move_down) {}
+               const std::string& upper_file,
+               const std::string& middle_file,
+               const std::string& bottom_file)
+      : name(name), upper_file(upper_file), middle_file(middle_file),
+        bottom_file(bottom_file) {}
 };
 
 struct Scenario {
   std::string name;
-  AnimationState ped_move_up;
-  AnimationState ped_move_down;
-  AnimationState ped_stop_up;
-  AnimationState ped_stop_down;
-  AnimationState traffic_up;
-  AnimationState traffic_middle;
-  AnimationState traffic_down;
+  AnimationState upper;
+  AnimationState middle;
+  AnimationState bottom;
   std::vector<AnimationState> traffic_random;
   bool full_random = false;
 
@@ -187,10 +180,6 @@ static void InterruptHandler(int signo) {
   should_interrupt_animation_loop = true;
 }
 
-static bool IsMainRoadFacing() {
-  return (client_config.traffic_light_id % 2 == 0);
-}
-
 // Note that colors refers to those shown along the main road.
 enum class LightStage {
   NOT_STARTED,
@@ -220,74 +209,54 @@ static LightStage GetLightStage(uint64_t cur_time) {
 }
 
 struct LightAnimations {
-  AnimationState side1_traffic_up;
-  AnimationState side1_traffic_middle;
-  AnimationState side1_traffic_down;
-  AnimationState side1_pedestrian_up;
-  AnimationState side1_pedestrian_down;
-  AnimationState side2_traffic_up;
-  AnimationState side2_traffic_middle;
-  AnimationState side2_traffic_down;
-  AnimationState side2_pedestrian_up;
-  AnimationState side2_pedestrian_down;
+  AnimationState upper;
+  AnimationState middle;
+  AnimationState bottom;
 
   std::vector<AnimationState> traffic_random;
   bool full_random = false;
 
-  bool has_future_pedestrian = false;
-  AnimationState future_pedestrian_up;
-  AnimationState future_pedestrian_down;
+  AnimationState steady_state_override_upper;
+  AnimationState steady_state_override_middle;
+  AnimationState steady_state_override_bottom;
 
   size_t max_pedestrian_frame_count;
 };
 
 static void FinalizeLightAnimations(LightAnimations* lights) {
-  size_t m1 = lights->side1_pedestrian_up.frame_count();
-  size_t m2 = lights->side2_pedestrian_up.frame_count();
-  size_t m3 = lights->side1_pedestrian_down.frame_count();
-  size_t m4 = lights->side2_pedestrian_down.frame_count();
-  lights->max_pedestrian_frame_count =
-      std::max(std::max(m1, m2), std::max(m3, m4));
+  size_t m1 = lights->bottom.frame_count();
+  size_t m2 = lights->middle.frame_count();
+  lights->max_pedestrian_frame_count = std::max(m1, m2);
 }
 
 static std::vector<AnimationState*> GetRenderSequence(LightAnimations* lights) {
-  std::vector<AnimationState*> result(10, nullptr);
-  result[0] = &lights->side1_pedestrian_down;
-  result[1] = &lights->side1_pedestrian_up;
-  result[2] = &lights->side1_traffic_down;
-  result[3] = &lights->side1_traffic_middle;
-  result[4] = &lights->side1_traffic_up;
-  result[5] = &lights->side2_traffic_up;
-  result[6] = &lights->side2_traffic_middle;
-  result[7] = &lights->side2_traffic_down;
-  result[8] = &lights->side2_pedestrian_up;
-  result[9] = &lights->side2_pedestrian_down;
+  std::vector<AnimationState*> result(3, nullptr);
+  result[0] = &lights->bottom;
+  result[1] = &lights->middle;
+  result[2] = &lights->upper;
   return result;
 }
 
-static void ApplyFuturePedestrian(LightAnimations* dst,
-                                  const LightAnimations& prev_ped_lights) {
-  if (prev_ped_lights.has_future_pedestrian) {
-    dst->side1_pedestrian_up = prev_ped_lights.future_pedestrian_up;
-    dst->side1_pedestrian_down = prev_ped_lights.future_pedestrian_down;
-    dst->side2_pedestrian_up = prev_ped_lights.future_pedestrian_up;
-    dst->side2_pedestrian_down = prev_ped_lights.future_pedestrian_down;
+static void ApplySteadyStateOverride(LightAnimations* dst,
+                                     const LightAnimations& prev_ped_lights) {
+  if (prev_ped_lights.steady_state_override_upper) {
+    dst->upper = prev_ped_lights.steady_state_override_upper;
+  }
+  if (prev_ped_lights.steady_state_override_middle) {
+    dst->middle = prev_ped_lights.steady_state_override_middle;
+  }
+  if (prev_ped_lights.steady_state_override_bottom) {
+    dst->bottom = prev_ped_lights.steady_state_override_bottom;
   }
 }
 
 static LightAnimations GetRedStateAnimations(
     const LightAnimations& prev_ped_lights) {
   LightAnimations result;
-  if (IsMainRoadFacing()) {
-    result.side1_traffic_up = GetSolidRed();
-    result.side2_traffic_up = GetSolidRed();
-  } else {
-    result.side1_traffic_down = GetSolidGreen();
-    result.side2_traffic_down = GetSolidGreen();
-  }
-  result.side1_pedestrian_up = red_light_animation;
-  result.side2_pedestrian_up = red_light_animation;
-  ApplyFuturePedestrian(&result, prev_ped_lights);
+  result.upper = GetSolidRed();
+  result.middle = GetSolidRed();
+  result.bottom = GetSolidRed();
+  ApplySteadyStateOverride(&result, prev_ped_lights);
   FinalizeLightAnimations(&result);
   return result;
 }
@@ -295,11 +264,10 @@ static LightAnimations GetRedStateAnimations(
 static LightAnimations GetYellowStateAnimations(
     const LightAnimations& prev_ped_lights) {
   LightAnimations result;
-  result.side1_traffic_middle = GetSolidYellow();
-  result.side2_traffic_middle = GetSolidYellow();
-  result.side1_pedestrian_up = red_light_animation;
-  result.side2_pedestrian_up = red_light_animation;
-  ApplyFuturePedestrian(&result, prev_ped_lights);
+  result.upper = GetSolidYellow();
+  result.middle = GetSolidYellow();
+  result.bottom = GetSolidYellow();
+  ApplySteadyStateOverride(&result, prev_ped_lights);
   FinalizeLightAnimations(&result);
   return result;
 }
@@ -307,84 +275,43 @@ static LightAnimations GetYellowStateAnimations(
 static LightAnimations GetGreenStateAnimations(
     const LightAnimations& prev_ped_lights) {
   LightAnimations result;
-  if (IsMainRoadFacing()) {
-    result.side1_traffic_down = GetSolidGreen();
-    result.side2_traffic_down = GetSolidGreen();
-  } else {
-    result.side1_traffic_up = GetSolidRed();
-    result.side2_traffic_up = GetSolidRed();
-  }
-  result.side1_pedestrian_up = red_light_animation;
-  result.side2_pedestrian_up = red_light_animation;
-  ApplyFuturePedestrian(&result, prev_ped_lights);
+  result.upper = GetSolidGreen();
+  result.middle = GetSolidGreen();
+  result.bottom = GetSolidGreen();
+  ApplySteadyStateOverride(&result, prev_ped_lights);
   FinalizeLightAnimations(&result);
   return result;
 }
 
 static LightAnimations GetPedestrianStateAnimations() {
-  const Scenario* scenario1 = scenario_main;
-  const Scenario* scenario2 = scenario_main;
-
   LightAnimations result;
-  if (!scenario1 && !scenario2) {
-    result.side1_traffic_up = GetSolidRed();
-    result.side2_traffic_up = GetSolidRed();
-    result.side1_pedestrian_down = GetSolidGreen();
-    result.side2_pedestrian_down = GetSolidGreen();
+  if (!scenario_main) {
+    result.upper = GetSolidRed();
+    result.middle = GetSolidYellow();
+    result.bottom = GetSolidGreen();
     FinalizeLightAnimations(&result);
     return result;
   }
 
-  if (scenario1 && !scenario2) {
-    scenario2 = scenario1;
-  }
-  if (scenario2 && !scenario1) {
-    scenario1 = scenario2;
-  }
+  result.upper = scenario_main->upper;
+  result.middle = scenario_main->middle;
+  result.bottom = scenario_main->bottom;
 
-  result.side1_pedestrian_up = scenario1->ped_move_up;
-  result.side1_pedestrian_down = scenario1->ped_move_down;
-  result.side1_traffic_up = scenario1->traffic_up;
-  result.side1_traffic_middle = scenario1->traffic_middle;
-  result.side1_traffic_down = scenario1->traffic_down;
-
-  result.side2_pedestrian_up = scenario2->ped_move_up;
-  result.side2_pedestrian_down = scenario2->ped_move_down;
-  result.side2_traffic_up = scenario2->traffic_up;
-  result.side2_traffic_middle = scenario2->traffic_middle;
-  result.side2_traffic_down = scenario2->traffic_down;
-
-  if (scenario1->full_random) {
-    result.full_random = scenario1->full_random;
-    result.traffic_random = scenario1->traffic_random;
-  } else if (!scenario1->traffic_random.empty()) {
-    result.traffic_random = scenario1->traffic_random;
-  } else if (!scenario2->traffic_random.empty()) {
-    result.traffic_random = scenario2->traffic_random;
+  if (scenario_main->full_random) {
+    result.full_random = scenario_main->full_random;
+    result.traffic_random = scenario_main->traffic_random;
+  } else if (!scenario_main->traffic_random.empty()) {
+    result.traffic_random = scenario_main->traffic_random;
   }
 
   // Set continuing animations on pedestrian lights, if selected.
-  if (scenario1->ped_stop_up || scenario1->ped_stop_down) {
-    result.future_pedestrian_up = scenario1->ped_stop_up;
-    result.future_pedestrian_down = scenario1->ped_stop_down;
-    result.has_future_pedestrian = true;
-  } else if (scenario2->ped_stop_up || scenario2->ped_stop_down) {
-    result.future_pedestrian_up = scenario2->ped_stop_up;
-    result.future_pedestrian_down = scenario2->ped_stop_down;
-    result.has_future_pedestrian = true;
-  } else if (scenario_main_stop_cat && stop_cat_animation) {
-    result.future_pedestrian_up = stop_cat_animation;
-    result.has_future_pedestrian = true;
+  if (scenario_main_stop_cat && stop_cat_animation) {
+    result.steady_state_override_middle = stop_cat_animation;
+    // result.steady_state_override_bottom = stop_cat_animation;
   }
 
-  // Set the red traffic light, if it's not overtaken.
-  if (!result.side1_traffic_up && !result.side1_traffic_middle &&
-      !result.side1_traffic_down) {
-    result.side1_traffic_up = GetSolidRed();
-  }
-  if (!result.side2_traffic_up && !result.side2_traffic_middle &&
-      !result.side2_traffic_down) {
-    result.side2_traffic_up = GetSolidRed();
+  if (!result.upper) {
+    // result.upper = GetSolidRed();
   }
 
   FinalizeLightAnimations(&result);
@@ -408,7 +335,7 @@ static void UpdateRandomTrafficLights(LightAnimations* current_lights,
   }
 
   if (current_lights->full_random) {
-    if (current_lights->side1_pedestrian_up)
+    if (current_lights->middle)
       return;
   } else {
     // Wait for 5.5 seconds for the trip to start.
@@ -417,26 +344,13 @@ static void UpdateRandomTrafficLights(LightAnimations* current_lights,
     }
   }
 
-  UpdateRandomTrafficLight(&current_lights->side1_pedestrian_up,
-                           current_lights);
-  UpdateRandomTrafficLight(&current_lights->side2_pedestrian_up,
-                           current_lights);
+  UpdateRandomTrafficLight(&current_lights->middle, current_lights);
 
   if (current_lights->full_random) {
-    UpdateRandomTrafficLight(&current_lights->side1_pedestrian_down,
-                             current_lights);
-    UpdateRandomTrafficLight(&current_lights->side2_pedestrian_down,
-                             current_lights);
+    UpdateRandomTrafficLight(&current_lights->bottom, current_lights);
   }
 
-  UpdateRandomTrafficLight(&current_lights->side1_traffic_up, current_lights);
-  UpdateRandomTrafficLight(&current_lights->side1_traffic_middle,
-                           current_lights);
-  UpdateRandomTrafficLight(&current_lights->side1_traffic_down, current_lights);
-  UpdateRandomTrafficLight(&current_lights->side2_traffic_up, current_lights);
-  UpdateRandomTrafficLight(&current_lights->side2_traffic_middle,
-                           current_lights);
-  UpdateRandomTrafficLight(&current_lights->side2_traffic_down, current_lights);
+  UpdateRandomTrafficLight(&current_lights->upper, current_lights);
 }
 
 static bool RenderLightAnimations(LightAnimations* lights,
@@ -528,7 +442,8 @@ static void PickNextPedestrian() {
     }
   }
 
-  scenario_main_stop_cat = IsRandomPercentile(9);
+  scenario_main_stop_cat = IsRandomPercentile(
+      client_config.stop_cat_chance_percentile);
 
   if (scenario_main) {
     Broadcast(scenario_main->name, scenario_main_stop_cat, false);
@@ -607,8 +522,8 @@ static void TryRunAnimationLoop() {
               "Switching to PEDESTRIAN light, scenario '%s', "
               "future_ped='%s'\n",
               (scenario_main ? scenario_main->name.c_str() : "<none>"),
-              (current_lights.future_pedestrian_up
-                   ? current_lights.future_pedestrian_up.animation->name.c_str()
+              (current_lights.steady_state_override_middle
+                   ? current_lights.steady_state_override_middle.animation->name.c_str()
                    : ""));
           if (current_lights.max_pedestrian_frame_count == 1 ||
               current_lights.full_random) {
@@ -691,9 +606,15 @@ static bool LoadOneAnimation(AnimationState* dst,
     return true;
   }
 
-  dst->animation = collection->FindAnimation(name);
+  std::string normalized_name = name;
+  if (name[0] == '-') {
+    dst->flip_h = true;
+    normalized_name = name.substr(1);
+  }
+
+  dst->animation = collection->FindAnimation(normalized_name);
   if (!dst->animation) {
-    printf("Unable to find animation '%s' in '%s'\n", name.c_str(),
+    printf("Unable to find animation '%s' in '%s'\n", normalized_name.c_str(),
            collection->name.c_str());
     return false;
   }
@@ -718,29 +639,13 @@ static void LoadScenario(const ScenarioSpec& spec) {
   Scenario& scenario = all_scenarios.back();
 
   bool success = true;
-  if (!LoadOneAnimation(&scenario.ped_move_up, collection, spec.ped_move_up)) {
+  if (!LoadOneAnimation(&scenario.upper, collection, spec.upper_file)) {
     success = false;
   }
-  if (!LoadOneAnimation(&scenario.ped_move_down, collection,
-                        spec.ped_move_down)) {
+  if (!LoadOneAnimation(&scenario.middle, collection, spec.middle_file)) {
     success = false;
   }
-  if (!LoadOneAnimation(&scenario.ped_stop_up, collection, spec.ped_stop_up)) {
-    success = false;
-  }
-  if (!LoadOneAnimation(&scenario.ped_stop_down, collection,
-                        spec.ped_stop_down)) {
-    success = false;
-  }
-  if (!LoadOneAnimation(&scenario.traffic_up, collection, spec.traffic_up)) {
-    success = false;
-  }
-  if (!LoadOneAnimation(&scenario.traffic_middle, collection,
-                        spec.traffic_middle)) {
-    success = false;
-  }
-  if (!LoadOneAnimation(&scenario.traffic_down, collection,
-                        spec.traffic_down)) {
+  if (!LoadOneAnimation(&scenario.bottom, collection, spec.bottom_file)) {
     success = false;
   }
 
@@ -760,19 +665,7 @@ static void LoadScenario(const ScenarioSpec& spec) {
     }
   }
 
-  scenario.traffic_up.is_cyclic = true;
-  scenario.traffic_middle.is_cyclic = true;
-  scenario.traffic_down.is_cyclic = true;
-
-  if (scenario.traffic_random.empty()) {
-    if (scenario.ped_move_up && !scenario.ped_move_down) {
-      scenario.ped_move_down = scenario.ped_move_up;
-      scenario.ped_move_down.flip_h = true;
-    } else if (scenario.ped_move_down && !scenario.ped_move_up) {
-      scenario.ped_move_up = scenario.ped_move_down;
-      scenario.ped_move_up.flip_h = true;
-    }
-  }
+  scenario.upper.is_cyclic = true;
 
   if (!success) {
     fprintf(stderr, "Failed to load scenario '%s'\n", spec.name.c_str());
@@ -783,33 +676,26 @@ static void LoadScenario(const ScenarioSpec& spec) {
 static void LoadAllScenarios() {
   SetupCommonScenarioData();
 
-  LoadScenario(ScenarioSpec("bike", "", "red"));
-  LoadScenario(ScenarioSpec("burning", "", "red"));
-  LoadScenario(ScenarioSpec("hug", "red", "green"));
-  LoadScenario(ScenarioSpec("pac-man", "", "green"));
+  LoadScenario(ScenarioSpec("bike", "", "-red", "red"));
+  LoadScenario(ScenarioSpec("burning", "", "-red", "red"));
+  LoadScenario(ScenarioSpec("hug", "", "red", "green"));
+  LoadScenario(ScenarioSpec("pac-man", "green", "-green", "green"));
 
-  ScenarioSpec lsd("lsd", "", "green");
+  ScenarioSpec lsd("lsd", "", "", "green");
   lsd.traffic_random = "mitya";
   LoadScenario(lsd);
 
-  LoadScenario(ScenarioSpec("pray", "", "red"));
-  LoadScenario(ScenarioSpec("rastaman", "red", "green"));
-  LoadScenario(ScenarioSpec("recursion", "", "green"));
-  LoadScenario(ScenarioSpec("ufo", "red", "green"));
-  LoadScenario(ScenarioSpec("sex", "", "red"));
+  LoadScenario(ScenarioSpec("pray", "", "-red", "red"));
+  LoadScenario(ScenarioSpec("rastaman", "", "red", "green"));
+  LoadScenario(ScenarioSpec("recursion", "green", "-green", "green"));
+  LoadScenario(ScenarioSpec("ufo", "", "red", "green"));
+  LoadScenario(ScenarioSpec("sex", "", "-red", "red"));
 
-  ScenarioSpec dance("dance", "green_up", "green_down");
-  dance.ped_stop_up = "red_up";
-  dance.ped_stop_down = "red_down";
-  LoadScenario(dance);
+  LoadScenario(ScenarioSpec("dance", "green_up", "red_up", "green_down"));
 
-  ScenarioSpec party("party", "red", "green");
-  party.traffic_up = "equalizer_up";
-  party.traffic_middle = "equalizer_middle";
-  party.traffic_down = "equalizer_down";
-  LoadScenario(party);
+  LoadScenario(ScenarioSpec("party", "equalizer_up", "red", "green"));
 
-  ScenarioSpec birthday("birthday", "", "");
+  ScenarioSpec birthday("birthday", "", "", "");
   birthday.full_random = true;
   LoadScenario(birthday);
 }
@@ -856,11 +742,6 @@ static ClientConfig ReadConfig(const std::string& app_path) {
       continue;
     }
 
-    if (name == "traffic_light_id") {
-      result.traffic_light_id = std::stoi(value);
-      continue;
-    }
-
     if (name == "is_sequential") {
       result.is_sequential = (std::stoi(value) != 0);
       continue;
@@ -878,6 +759,11 @@ static ClientConfig ReadConfig(const std::string& app_path) {
 
     if (name == "yellow_light_sec") {
       result.yellow_light_ms = std::stoi(value) * 1000;
+      continue;
+    }
+
+    if (name == "stop_cat_chance_percentile") {
+      result.stop_cat_chance_percentile = std::stoi(value);
       continue;
     }
 
