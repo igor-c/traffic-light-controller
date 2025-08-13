@@ -772,6 +772,12 @@ static ClientConfig ReadConfig(const std::string& app_path) {
 
   fprintf(stderr, "App path '%s', is_chinese=%d\n", result.app_path.c_str(),
           (int)result.is_matrix_chinese);
+  fprintf(stderr,
+          "First=%s, is_sequential=%d, red_green_ms=%d, yellow_ms=%d, "
+          "stop_cat=%d\n",
+          result.first_scenario.c_str(), (int)result.is_sequential,
+          (int)result.red_green_light_ms, (int)result.yellow_light_ms,
+          (int)result.stop_cat_chance_percentile);
   return result;
 }
 
