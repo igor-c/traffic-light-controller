@@ -22,7 +22,10 @@
       Add: blacklist snd_bcm2835
     sudo vi /media/$USER/rootfs/etc/wpa_supplicant/wpa_supplicant.conf
       ctrl_interface=/var/run/wpa_supplicant
+      country=us
+      update_config=1
       network={
+        scan_ssid=0
         ssid="PEREKRESTOK"
         psk="88888888"
       }
@@ -31,17 +34,26 @@
     * Connect console cable's black/white/green to pins 3/4/5
       (https://learn.adafruit.com/adafruits-raspberry-pi-lesson-5-using-a-console-cable/connect-the-lead)
     * sudo screen /dev/ttyUSB0 115200
-    * If bootup gets stuck - SSD card may need replacing
+    * If bootup gets stuck
+      - SSD card may need replacing
+    * If bootup gets into boot loop, or
+    * If serial port has gibberish, or
+    * If console or dmesg has "undervoltage" warnings
+      - power cable may need replacing
     * Log in as pi/raspberry
+  * Global config
+    sudo raspi-config nonint do_wifi_country US
+    sudo nmcli con add type wifi con-name "PEREKRESTOK0" ifname wlan0 ssid "PEREKRESTOK" -- wifi-sec.key-mgmt wpa-psk wifi-sec.psk "88888888"
+    sudo nmcli con add type wifi con-name "PEREKRESTOK1" ifname wlan1 ssid "PEREKRESTOK" -- wifi-sec.key-mgmt wpa-psk wifi-sec.psk "88888888"
+    # sudo iwlist wlan0 scan | grep PEREK
+  * Assign static IP in router's DHCP config
+    192.168.88.55
+  * Connect over Wifi
+    ssh pi@192.168.88.55
+    sshpass -p "raspberry" ssh pi@192.168.88.55
   * Update the system
     sudo apt update
     sudo apt upgrade -y
-  * Global config
-    sudo raspi-config nonint do_wifi_country US
-    sudo nmcli con add type wifi con-name "PEREKRESTOK" ifname wlan0 ssid "PEREKRESTOK" -- wifi-sec.key-mgmt wpa-psk wifi-sec.psk "88888888"
-    # sudo iwlist wlan0 scan | grep PEREK
-  * Assign static IP in router DHCP config
-    192.168.88.55
   * Install various packages on RPi:
     sudo apt-get install build-essential git vim imagemagick libmagick-dev
     git clone https://github.com/hzeller/rpi-rgb-led-matrix
@@ -55,14 +67,28 @@
       make -C examples-api-use
       sudo ./examples-api-use/demo --led-gpio-mapping adafruit-hat -D3
   * Get the code:
-    git clone https://github.com/igor-c/traffic-light-controller.git
-    cd traffic-light-controller
+    git clone https://github.com/igor-c/traffic-light-controller.git controller
+    cd controller
     make clean client
+  * Make it start on boot
+    sudo vi /etc/systemd/system/traffic-light.service
+      [Unit]
+      Description=Traffic Lights Service
+      After=network.target
+      [Service]
+      ExecStart=/home/pi/controller/client
+      WorkingDirectory=/home/pi/controller
+      User=root
+      Restart=on-failure
+      [Install]
+      WantedBy=multi-user.target
+    sudo systemctl daemon-reload
+    sudo systemctl enable traffic-light.service
+    sudo systemctl start traffic-light.service
+    sudo journalctl -u traffic-light.service
 
 
-Troubleshooting:
-  * If serial port has gibberish, or you see "undervoltage" messages
-    - Replace the power cable
+
 
 
 Card backup:
@@ -108,4 +134,3 @@ Compiling traffic-light-controller:
     cd traffic-light-controller
 
 Resizing the filesystem on /dev/sdc2 to 716800 (4k) blocks
-

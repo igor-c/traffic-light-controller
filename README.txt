@@ -52,7 +52,9 @@ System commands on RPi:
 - Boot-time client startup config: sudo vi /etc/rc.local
 - Wifi config: sudo vi /etc/wpa_supplicant/wpa_supplicant.conf
 - Boot-time WH-to-system clock sync: sudo vi /lib/udev/hwclock-set
-- View system log: less /var/log/syslog
+- View system log:
+    journalctl
+    sudo journalctl -b | grep wlan > wpa.log
 - The config file that got corrupted for unknown reason: /boot/config.txt
   We keep a backup copy of the same in /home/pi/boot_config.txt
 - To run a hzeller's matrix demo in Adafruit mode:

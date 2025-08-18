@@ -7,4 +7,4 @@ first_scenario = lsd
 red_green_light_sec = 3
 yellow_light_sec = 1
 
-stop_cat_chance_percentile = 15
+stop_cat_chance_percentile = 20
